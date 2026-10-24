@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "DSH-suggestions",
+    "description": "按真实用户请求推荐一条后续消息；Tab / → 填入草稿，双击 Tab 或文末 → 优化提示词。发送后立即隐藏旧建议。"
+  },
+  "suggestion.label": "建议的后续提示词"
+}

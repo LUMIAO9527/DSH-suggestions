@@ -1,0 +1,7 @@
+- insert:
+    - id: dsh-suggestions
+      name: dsh-suggestions
+      config:
+        debug: false
+        maxSuggestions: 1
+        timeoutMs: 25000

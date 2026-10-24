@@ -1,0 +1,205 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve, join, sep } from 'node:path';
+import { createServer } from 'node:http';
+import { EventEmitter } from 'node:events';
+import { apply, summarize } from './index.js';
+import { LIMITS, contextExcerpt, suggestionInput, parseSuggestion, parseRewrite, optimizeMaxTokens } from './prompt-core.mjs';
+
+const scratch = resolve(dirname(fileURLToPath(import.meta.url)), './_wip/tests');
+mkdirSync(scratch, { recursive: true });
+const root = mkdtempSync(join(scratch, 'host-tests-'));
+const events = () => [
+  { type: 'turn/start', seq: 1, data: { turn: 1 } },
+  { type: 'user/message', seq: 2, data: { content: [{ type: 'text', text: '查清全部原因，只分析，不改文件。' }] } },
+  { type: 'request/header', seq: 3, data: { header: { config: { provider: 'session-provider', model: 'session-model' } } } },
+  { type: 'assistant/message', seq: 4, data: { message: { content: [{ type: 'text', text: '已确认第一部分；第二部分仍未核实。' }] } } },
+  { type: 'turn/end', seq: 5, data: { reason: { kind: 'completed' } } },
+];
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function until(condition) { for (let i = 0; i < 100; i++) { if (condition()) return; await sleep(10); } throw new Error('condition timed out'); }
+
+function harness(options = {}) {
+  let composer;
+  let bridge;
+  const effects = [];
+  const calls = [];
+  let disposedHandles = 0;
+  const file = join(root, `bridge-${Math.random().toString(36).slice(2)}.json`);
+  const state = { events: events(), text: '["把第二部分也核实，列出还没有依据的结论"]', finish: 'stop', ...options };
+  const services = {
+    sessionQuery: {
+      async observeSession(id) { if (id === 'missing') throw new Error('session not found'); return { events: state.events, [Symbol.dispose]() { disposedHandles++; } }; },
+      async listSessions() { throw new Error('must not inspect unrelated sessions'); },
+    },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'default-provider', model: 'default-model' }) },
+    llm: {
+      async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'high' }, { id: 'low' }] } }; },
+      async *stream(request) {
+        calls.push(request);
+        if (state.hold) await new Promise((resolve, reject) => { request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }); state.release = resolve; });
+        if (state.error) throw new Error(state.error);
+        yield { type: 'text-delta', text: state.text };
+        if (state.finish) yield { type: 'finish', reason: { kind: state.finish } };
+      },
+    },
+    connection: { fetch: { register(definition) { composer = definition; return () => {}; } } },
+    webServer: { getOrigin: () => 'http://127.0.0.1:1', register(definition) { bridge = definition.handler; return () => {}; } },
+  };
+  const ctx = { get: name => services[name], inject(_names, callback) { callback(ctx); }, effect(fn) { const cleanup = fn(); effects.push(cleanup); return cleanup; }, logger: { info() {} } };
+  apply(ctx, { timeoutMs: 1000 }, { bridgeFile: file });
+  const api = async (body, signal) => (await composer.fetch({ json: async () => body, signal })).json();
+  const bridgeCall = async body => {
+    const token = JSON.parse(readFileSync(file, 'utf8')).token;
+    const req = Object.assign(new EventEmitter(), { method: 'POST', headers: { 'x-dsh-suggestions-token': token }, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } });
+    const res = Object.assign(new EventEmitter(), { writeHead(status) { this.status = status; }, end(text) { this.body = JSON.parse(text); this.writableEnded = true; } });
+    await bridge(req, res);
+    return { status: res.status, ...res.body };
+  };
+  const close = () => { for (const effect of effects.reverse()) effect?.(); };
+  return { state, calls, api, bridgeCall, close, file, handles: () => disposedHandles };
+}
+
+try {
+  await test('shared suggestion policy preserves the answer ending and accepts real abstention only', () => {
+    const answer = '原任务及约束。' + '中间内容。'.repeat(2500) + '结尾：第二部分尚未核实。';
+    const context = JSON.parse(suggestionInput({ assistantAnswer: answer, userRequest: '不改文件', recentUserMessages: ['只分析'] }));
+    assert.match(context.assistantAnswer, /第二部分尚未核实/);
+    assert.ok(context.assistantAnswer.length <= 9000);
+    assert.equal(context.userRequest, '不改文件');
+    assert.equal(parseSuggestion('[]'), '');
+    for (const raw of ['["继续"]', '["你可以先修改配置文件"]', '["第一条建议","第二条建议"]', '["未完成', '无法生成']) assert.throws(() => parseSuggestion(raw));
+    assert.throws(() => parseSuggestion('["修改 invented.py 里的参数"]', { assistantAnswer: '检查 original.py 的参数。' }));
+    assert.equal(parseSuggestion('["先给我看修改前后的差异"]'), '先给我看修改前后的差异');
+  });
+
+  await test('injected user-role messages never replace the human request or pollute its history', () => {
+    const log = events();
+    log[1].data.source = { kind: 'user' };
+    log.splice(3, 0, ...['agent-instructions', 'runtime-context', 'skill-catalog', 'time-context'].map((kind, i) => ({
+      type: 'user/message', seq: 3.1 + i / 10, data: { source: { kind }, role: 'user', content: [{ type: 'text', text: 'This injected snapshot is not the user request.' }] },
+    })));
+    const summary = summarize(log);
+    assert.equal(summary.lastUserText, '查清全部原因，只分析，不改文件。');
+    assert.deepEqual(summary.recentUserTexts, ['查清全部原因，只分析，不改文件。']);
+    assert.equal(summary.running, false);
+  });
+
+  await test('rewrite guards preserve prohibitions, numbers, files and code literals', () => {
+    const draft = '整理 report.md，禁止删除原件，必须先给我看预览，保留 12.5 和 `alpha=2`。';
+    assert.equal(parseRewrite(draft, draft), draft);
+    for (const text of ['整理 report.md，保留 12.5 和 `alpha=2`。', draft.replace('12.5', '12.6'), draft.replace('report.md', 'other.md'), draft.replace('`alpha=2`', '`alpha=3`')]) assert.throws(() => parseRewrite(text, draft));
+    assert.throws(() => parseRewrite('整理 report.md', '整理 D:\\Work\\report.md'));
+    assert.throws(() => parseRewrite('整理 report.md', '整理 /work/report.md'));
+    assert.ok(optimizeMaxTokens('字'.repeat(5000)) > 8000);
+    assert.ok(contextExcerpt('头'.repeat(500) + '尾'.repeat(500), 100).endsWith('尾'.repeat(20)));
+  });
+
+  await test('same-session route, model effort, single call deduplication and consumed-turn gate', async () => {
+    const h = harness({ hold: true });
+    try {
+      const first = h.api({ sessionId: 'own' });
+      const second = h.api({ sessionId: 'own' });
+      await until(() => h.calls.length === 1);
+      h.state.release();
+      const [a, b] = await Promise.all([first, second]);
+      assert.deepEqual(a.value.suggestions, b.value.suggestions);
+      assert.equal(a.value.suggestions.length, 1);
+      assert.equal(h.calls[0].provider, 'session-provider');
+      assert.equal(h.calls[0].sessionId, 'own');
+      assert.equal(h.calls[0].reasoningEffort, 'low');
+      assert.equal((await h.api({ sessionId: 'own', afterTurn: 1 })).value.status, 'none');
+      assert.equal(h.calls.length, 1);
+      assert.ok(h.handles() >= 1);
+    } finally { h.close(); }
+  });
+
+  await test('abstention is cached and failed/unfinished turns do not generate', async () => {
+    const h = harness({ text: '[]' });
+    try {
+      assert.equal((await h.api({ sessionId: 'own' })).value.status, 'none');
+      assert.equal((await h.api({ sessionId: 'own' })).value.status, 'none');
+      assert.equal(h.calls.length, 1);
+      h.state.events = events().slice(0, -1);
+      assert.equal((await h.api({ sessionId: 'own', fresh: true })).value.status, 'running');
+      h.state.events = events(); h.state.events.at(-1).data.reason.kind = 'cancelled';
+      assert.equal((await h.api({ sessionId: 'own', fresh: true })).value.status, 'none');
+      assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+  });
+
+  await test('a result generated before another window sends cannot be published afterward', async () => {
+    const h = harness({ hold: true });
+    try {
+      const response = h.api({ sessionId: 'own' });
+      await until(() => h.calls.length === 1);
+      h.state.events = [...events(), { type: 'turn/start', seq: 6, data: { turn: 2 } }, { type: 'user/message', seq: 7, data: { content: '下一条消息' } }];
+      h.state.release();
+      const value = (await response).value;
+      assert.equal(value.status, 'running');
+      assert.equal(value.suggestions.length, 0);
+    } finally { h.close(); }
+  });
+
+  await test('bridge uses explicit session or global default, never a recent unrelated session', async () => {
+    const h = harness({ text: '整理报告，禁止删除原件。' });
+    try {
+      assert.equal((await h.bridgeCall({ action: 'optimize', sessionId: 'own', draft: '整理报告，禁止删除原件。' })).ok, true);
+      assert.equal(h.calls.at(-1).provider, 'session-provider');
+      assert.equal((await h.bridgeCall({ action: 'optimize', draft: '整理报告，禁止删除原件。' })).ok, true);
+      assert.equal(h.calls.at(-1).provider, 'default-provider');
+      assert.equal((await h.bridgeCall({ action: 'optimize', sessionId: 'missing', draft: '整理报告' })).ok, false);
+      assert.equal(h.calls.length, 2);
+    } finally { h.close(); }
+  });
+
+  await test('bridge and composer reject truncated output without replacement text', async () => {
+    const h = harness({ text: '整理报告，并删除', finish: 'max-tokens' });
+    try {
+      assert.equal((await h.bridgeCall({ action: 'optimize', draft: '整理报告，禁止删除原件。' })).ok, false);
+      const response = await h.api({ sessionId: 'own', action: 'optimize', draft: '整理报告，禁止删除原件。' });
+      assert.equal(response.value.status, 'error');
+      assert.equal(response.value.prompt, undefined);
+      h.state.finish = undefined;
+      assert.equal((await h.bridgeCall({ action: 'optimize', draft: '整理报告' })).ok, false);
+      h.state.finish = 'stop'; h.state.text = '整理报告';
+      assert.equal((await h.bridgeCall({ action: 'optimize', draft: '整理报告，禁止删除原件。' })).ok, false);
+    } finally { h.close(); }
+  });
+
+  await test('long bridge draft keeps its tail and overly long input never reaches model', async () => {
+    const draft = '背景'.repeat(2500) + '，禁止删除原件。';
+    const h = harness({ text: draft });
+    try {
+      assert.equal((await h.bridgeCall({ action: 'optimize', draft })).ok, true);
+      assert.equal(JSON.parse(h.calls[0].messages[0].content[0].text).draft, draft);
+      assert.equal((await h.bridgeCall({ action: 'optimize', draft: '字'.repeat(LIMITS.draft + 1) })).ok, false);
+      assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+  });
+
+  await test('cancelled readers abort shared generation and disposal removes only owned discovery', async () => {
+    const h = harness({ hold: true });
+    try {
+      const first = new AbortController();
+      const second = new AbortController();
+      const a = h.api({ sessionId: 'own' }, first.signal);
+      const b = h.api({ sessionId: 'own' }, second.signal);
+      await until(() => h.calls.length === 1);
+      first.abort();
+      await a;
+      assert.equal(h.calls[0].signal.aborted, false);
+      second.abort();
+      await b;
+      await until(() => h.calls[0].signal.aborted);
+      assert.equal(existsSync(h.file), true);
+    } finally { h.close(); }
+    assert.equal(existsSync(h.file), false);
+  });
+} finally {
+  const target = resolve(root);
+  if (!target.startsWith(scratch + sep)) throw new Error('cleanup escaped test workspace');
+  rmSync(target, { recursive: true, force: true });
+}

@@ -1,0 +1,9 @@
+node_modules/
+_wip/
+*.tgz
+.env
+.env.*
+!.env.example
+bridge.json
+npm-debug.log*
+pnpm-debug.log*

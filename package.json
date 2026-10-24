@@ -1,0 +1,68 @@
+{
+  "name": "dsh-suggestions",
+  "version": "0.2.1",
+  "private": true,
+  "description": "DSH-suggestions：回答结束后提供一条后续建议，双击快捷键优化草稿；发送后立即清除旧建议。",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./prompt-core": "./prompt-core.mjs",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json",
+    "./mcp": "./mcp/server.mjs"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "prompt-core.mjs",
+    "version.mjs",
+    "cordis.patch.yml",
+    "locale/en.json",
+    "locale/zh.json",
+    "icon.svg",
+    "README.md",
+    "mcp/server.mjs",
+    "mcp/README.md"
+  ],
+  "scripts": {
+    "test": "node test.mjs && node test-client.mjs && node mcp/test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "displayName": "DSH-suggestions",
+  "author": "LUMIAO9527",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LUMIAO9527/DSH-suggestions.git"
+  },
+  "homepage": "https://github.com/LUMIAO9527/DSH-suggestions#readme",
+  "bugs": {
+    "url": "https://github.com/LUMIAO9527/DSH-suggestions/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "suggestions",
+    "prompt",
+    "mcp"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "bin": {
+    "dsh-suggestions-mcp": "./mcp/server.mjs"
+  }
+}
