@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "DSH-suggestions",
-    "description": "Suggests one useful follow-up from the actual user request. Tab / Right adopts; double Tab or Right at the end edits the draft. Sending immediately hides old suggestions."
+    "description": "Suggest follow-up prompts and improve drafts. Tab / Right accepts a suggestion; double Tab or double Right at the end improves the draft."
   },
   "suggestion.label": "Suggested follow-up"
 }

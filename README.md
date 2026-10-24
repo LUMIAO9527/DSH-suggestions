@@ -2,14 +2,13 @@
 
 DeepSeek Harness 输入框插件，提供两个功能：**后续提示词建议**和**当前草稿优化**。界面名称为 **DSH-suggestions**，安装包名为 `dsh-suggestions`。
 
-当前版本：**0.2.1**。已在 DSH Desktop **0.2.1-rc.3** 验证；其他版本尚未逐一验证。
+当前版本：**0.2.2**。已在 DSH Desktop **0.2.1-rc.3** 验证；其他版本尚未逐一验证。
 
 ## 使用
 
 - 回答完成、输入框为空时显示一条灰色后续建议；没有合适的下一步就不显示。
 - 按 `Tab` 或 `→` 采纳建议，只填入草稿，不自动发送；`Esc` 隐藏本轮建议。
 - 有草稿时双击 `Tab`，或在文末双击 `→`，优化草稿。单次方向键仍移动光标。
-- 发送消息后立即清除旧建议；正在生成、切换会话或继续编辑时，晚到的旧结果不会回填。
 - 优化失败、超时或约束检查未通过时保留原稿。草稿上限 16000 字符，超长拒绝，不截断。
 
 ## 从 GitHub 安装
@@ -19,13 +18,13 @@ DeepSeek Harness 输入框插件，提供两个功能：**后续提示词建议*
 在 DSH Desktop 的插件管理中选择从 GitHub 安装，填写：
 
 ```text
-github:LUMIAO9527/DSH-suggestions#v0.2.1
+github:LUMIAO9527/DSH-suggestions#v0.2.2
 ```
 
 Web / CLI 版可以使用：
 
 ```sh
-dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.2.1
+dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.2.2
 ```
 
 Desktop 使用应用自己的插件管理入口，勿把 Desktop 插件装进 `web` profile。仓库根目录就是插件包，不需要指定子目录，也不需要构建或执行安装脚本。更新时使用经过核对的 release / tag。

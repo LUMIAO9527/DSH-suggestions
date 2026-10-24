@@ -1,8 +1,8 @@
 {
   "name": "dsh-suggestions",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
-  "description": "DSH-suggestions：回答结束后提供一条后续建议，双击快捷键优化草稿；发送后立即清除旧建议。",
+  "description": "为 DeepSeek Harness 提供后续提示词建议和草稿优化。",
   "type": "module",
   "exports": {
     ".": "./index.js",
