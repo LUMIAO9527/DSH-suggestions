@@ -219,7 +219,8 @@ export function apply(ctx, config = {}, runtime = {}) {
   }
 
   async function suggestionsFor(sessionId, request = {}, signal) {
-    const entry = await abortable(readSession(sessionId, request.fresh === true), signal);
+    const manual = request.manual === true;
+    const entry = await abortable(readSession(sessionId, manual || request.fresh === true), signal);
     const summary = entry.summary;
     const afterTurn = Number.isFinite(request.afterTurn) ? request.afterTurn : 0;
     const base = { turn: summary.turn };
@@ -228,11 +229,12 @@ export function apply(ctx, config = {}, runtime = {}) {
     const fingerprint = createHash('sha256').update(JSON.stringify([summary.lastUserText, summary.lastAssistantText, summary.recentTurns, summary.earlierUserMessages])).digest('hex').slice(0, 16);
     const key = `${sessionId}#${summary.turn}#${summary.revision}#${fingerprint}`;
     const cached = cache.get(key);
-    if (cached && Date.now() - cached.at < CACHE_TTL_MS) return { ...base, status: cached.suggestions.length ? 'ready' : 'none', suggestions: cached.suggestions };
+    if (!manual && cached && Date.now() - cached.at < CACHE_TTL_MS) return { ...base, status: cached.suggestions.length ? 'ready' : 'none', suggestions: cached.suggestions };
     let task = inFlight.get(key);
+    if (task?.controller.signal.aborted) task = undefined;
     if (!task) {
       const failure = failures.get(key);
-      if (failure && (failure.count >= 2 || Date.now() - failure.at < 10000)) return { ...base, status: 'none', suggestions: [] };
+      if (!manual && failure && (failure.count >= 2 || Date.now() - failure.at < 10000)) return { ...base, status: 'none', suggestions: [] };
       if (inFlight.size >= 3) return { ...base, status: 'error', suggestions: [] };
       const controller = new AbortController();
       task = { controller, users: 0, done: false };
@@ -246,7 +248,7 @@ export function apply(ctx, config = {}, runtime = {}) {
           sessionId,
         }, controller.signal, entry.route);
         const suggestions = value.suggestion ? [value.suggestion] : [];
-        if (!disposed && !controller.signal.aborted) remember(cache, key, { at: Date.now(), suggestions });
+        if (!disposed && !controller.signal.aborted) { remember(cache, key, { at: Date.now(), suggestions }); failures.delete(key); }
         return suggestions;
       })().catch(error => {
         if (!controller.signal.aborted && !disposed) remember(failures, key, { at: Date.now(), count: (failures.get(key)?.count || 0) + 1 });

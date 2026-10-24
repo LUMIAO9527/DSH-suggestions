@@ -113,29 +113,36 @@ window.__ModuleLoader__.load({
       const [dismissedKey, setDismissedKey] = useState('');
       const [showChip, setShowChip] = useState(false);
       const [layout, setLayout] = useState(null);
+      const [generating, setGenerating] = useState(false);
       const anchorRef = useRef(null);
       const consumedTurnRef = useRef(0);
+      const sentTurnRef = useRef(0);
       const lastTurnRef = useRef(0);
       const lastEmptyAtRef = useRef(0);
       const previousDraftRef = useRef(draft);
-      const keyRef = useRef({ tab: 0, arrow: 0 });
+      const keyRef = useRef({});
+      const generationRef = useRef(null);
       const optimizationRef = useRef(null);
       const activeRef = useRef(null);
       activeRef.current = { sessionId, draft, empty, idle, runningTurn, sending };
       const hintKey = hint ? `${hint.sessionId}#${hint.turn}` : '';
       const visible = Boolean(hint?.text) && hint.sessionId === sessionId && empty && idle && !runningTurn && !sending && dismissedKey !== hintKey;
-      const shouldPoll = Boolean(sessionId) && empty && idle && !runningTurn && !sending;
+      const shouldPoll = Boolean(sessionId) && empty && idle && !runningTurn && !sending && !generating;
 
       useEffect(() => {
         consumedTurnRef.current = 0;
+        sentTurnRef.current = 0;
         lastTurnRef.current = 0;
         lastEmptyAtRef.current = 0;
         previousDraftRef.current = draft;
-        keyRef.current = { tab: 0, arrow: 0 };
+        keyRef.current = {};
+        setGenerating(false);
         setHint(null);
         setDismissedKey('');
         setShowChip(false);
         return () => {
+          generationRef.current?.controller.abort();
+          generationRef.current = null;
           optimizationRef.current?.controller.abort();
           optimizationRef.current = null;
         };
@@ -146,18 +153,25 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!sending && !runningTurn) return;
         consumedTurnRef.current = Math.max(consumedTurnRef.current, lastTurnRef.current);
+        sentTurnRef.current = Math.max(sentTurnRef.current, consumedTurnRef.current);
         lastEmptyAtRef.current = Date.now();
         setHint(null);
         optimizationRef.current?.controller.abort();
         optimizationRef.current = null;
+        generationRef.current?.controller.abort();
+        generationRef.current = null;
+        setGenerating(false);
+        keyRef.current = {};
       }, [sessionId, pendingSubmissionKey, runningTurn]);
 
       useEffect(() => {
+        if (previousDraftRef.current !== draft && (keyRef.current.mode !== 'accepted' || keyRef.current.draft !== draft)) keyRef.current = {};
         if (previousDraftRef.current.trim() && !draft.trim()) lastEmptyAtRef.current = Date.now();
         previousDraftRef.current = draft;
         if (draft.trim() || !idle) setHint(null);
         if (phase === 'submitting' || phase === 'adjudicating') {
           consumedTurnRef.current = Math.max(consumedTurnRef.current, lastTurnRef.current);
+          sentTurnRef.current = Math.max(sentTurnRef.current, consumedTurnRef.current);
           lastEmptyAtRef.current = Date.now();
         }
         const pending = optimizationRef.current;
@@ -166,6 +180,15 @@ window.__ModuleLoader__.load({
           optimizationRef.current = null;
         }
       }, [draft, idle, phase, sessionId]);
+
+      useEffect(() => {
+        const pending = generationRef.current;
+        if (pending && (pending.sessionId !== sessionId || !empty || !idle)) {
+          pending.controller.abort();
+          generationRef.current = null;
+          setGenerating(false);
+        }
+      }, [sessionId, empty, idle]);
 
       useEffect(() => {
         if (!shouldPoll) return undefined;
@@ -196,6 +219,7 @@ window.__ModuleLoader__.load({
             lastTurnRef.current = Math.max(lastTurnRef.current, turn);
             if (value?.status === 'running') {
               consumedTurnRef.current = Math.max(consumedTurnRef.current, lastTurnRef.current);
+              sentTurnRef.current = Math.max(sentTurnRef.current, consumedTurnRef.current);
               setHint(null);
               schedule(3500);
             } else if (value?.status === 'ready' && typeof value.suggestions?.[0] === 'string' && turn > consumedTurnRef.current) {
@@ -267,11 +291,45 @@ window.__ModuleLoader__.load({
         const active = activeRef.current;
         if (!visible || !hint || active.sessionId !== sessionId || !active.empty || !active.idle || active.sending || active.runningTurn) return;
         const editor = composerEditor(anchorRef.current);
+        keyRef.current = { mode: 'accepted', at: Date.now(), draft: hint.text };
         inputActions.setDraft(hint.text);
         consumedTurnRef.current = Math.max(consumedTurnRef.current, hint.turn);
         setHint(null);
         editor?.focus();
       }, [visible, hint, sessionId, inputActions]);
+
+      const generate = useCallback(async () => {
+        const state = activeRef.current;
+        if (!state.sessionId || !state.empty || !state.idle || state.sending || state.runningTurn || generationRef.current) return;
+        const pending = { sessionId: state.sessionId, controller: new AbortController() };
+        generationRef.current = pending;
+        setGenerating(true);
+        setHint(null);
+        const timeout = setTimeout(() => pending.controller.abort(), 40000);
+        try {
+          const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, signal: pending.controller.signal, body: JSON.stringify({ sessionId: pending.sessionId, action: 'suggest', manual: true, fresh: true, afterTurn: sentTurnRef.current || undefined }) });
+          if (!response.ok) return;
+          const payload = await response.json();
+          const result = payload?.ok ? payload.value : undefined;
+          const current = activeRef.current;
+          if (pending.controller.signal.aborted || generationRef.current !== pending || current.sessionId !== pending.sessionId || !current.empty || !current.idle || current.sending || current.runningTurn) return;
+          const turn = Number(result?.turn) || 0;
+          lastTurnRef.current = Math.max(lastTurnRef.current, turn);
+          if (result?.status === 'running') {
+            consumedTurnRef.current = Math.max(consumedTurnRef.current, turn);
+            sentTurnRef.current = Math.max(sentTurnRef.current, turn);
+          } else if (result?.status === 'ready' && turn > sentTurnRef.current && typeof result.suggestions?.[0] === 'string' && result.suggestions[0].trim()) {
+            consumedTurnRef.current = sentTurnRef.current;
+            setDismissedKey('');
+            setHint({ sessionId: pending.sessionId, turn, text: result.suggestions[0].trim() });
+            setShowChip(hintUses(`${pending.sessionId}#${turn}`) <= 3);
+          }
+        } catch { /* Leave the composer available when no suggestion is returned. */ }
+        finally {
+          clearTimeout(timeout);
+          if (generationRef.current === pending) { generationRef.current = null; setGenerating(false); }
+        }
+      }, []);
 
       const optimize = useCallback(async () => {
         const state = activeRef.current;
@@ -297,33 +355,46 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!sessionId) return undefined;
         const onKeyDown = event => {
-          if (event.isComposing || event.keyCode === 229 || event.repeat || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+          if (event.isComposing || event.keyCode === 229 || event.repeat || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) { keyRef.current = {}; return; }
           const editor = composerEditor(anchorRef.current);
-          if (!editor || !(document.activeElement === editor || editor.contains(document.activeElement))) return;
+          if (!editor || !(document.activeElement === editor || editor.contains(document.activeElement))) { keyRef.current = {}; return; }
           const current = activeRef.current;
-          if (!current.idle) return;
-          if (event.key === 'Escape' && visible) { setDismissedKey(hintKey); return; }
-          if (current.empty) {
-            if (visible && (event.key === 'Tab' || event.key === 'ArrowRight')) { event.preventDefault(); event.stopPropagation(); accept(); }
+          if (!current.idle || current.sending || current.runningTurn) { keyRef.current = {}; return; }
+          if (event.key === 'Escape' && (visible || generationRef.current)) {
+            setDismissedKey(hintKey || `${sessionId}#${lastTurnRef.current}`);
+            generationRef.current?.controller.abort();
+            generationRef.current = null;
+            setGenerating(false);
+            keyRef.current = {};
             return;
           }
           const now = Date.now();
-          if (event.key === 'Tab') {
-            event.preventDefault(); event.stopPropagation();
-            if (keyRef.current.tab && now - keyRef.current.tab <= 500) { keyRef.current.tab = 0; optimize(); }
-            else keyRef.current.tab = now;
-            keyRef.current.arrow = 0;
-          } else if (event.key === 'ArrowRight' && caretAtEnd(editor)) {
-            if (keyRef.current.arrow && now - keyRef.current.arrow <= 500) { keyRef.current.arrow = 0; event.preventDefault(); event.stopPropagation(); optimize(); }
-            else keyRef.current.arrow = now;
-            keyRef.current.tab = 0;
-          } else keyRef.current = { tab: 0, arrow: 0 };
+          const shortcut = event.key === 'Tab' || event.key === 'ArrowRight';
+          const previous = keyRef.current;
+          const mode = current.empty ? 'empty' : 'draft';
+          const doubled = previous.key === event.key && previous.mode === mode && previous.draft === current.draft && now - previous.at <= 500;
+          // A second press in the same acceptance gesture must not optimize
+          // the suggestion that the first press has just inserted.
+          if (shortcut && previous.mode === 'accepted' && previous.draft === current.draft && now - previous.at <= 500) { event.preventDefault(); event.stopPropagation(); return; }
+          if (current.empty) {
+            if (visible && shortcut && !doubled) { event.preventDefault(); event.stopPropagation(); accept(); return; }
+            if (!shortcut) { keyRef.current = {}; return; }
+          } else if (event.key !== 'Tab' && !(event.key === 'ArrowRight' && caretAtEnd(editor))) {
+            keyRef.current = {};
+            return;
+          }
+          // Keep focus in the editor for the second Tab; a lone Right remains
+          // native caret movement when no suggestion is being accepted.
+          if (event.key === 'Tab' || doubled) { event.preventDefault(); event.stopPropagation(); }
+          keyRef.current = doubled ? {} : { key: event.key, mode, draft: current.draft, at: now };
+          if (doubled) { if (current.empty) generate(); else optimize(); }
         };
-        const resetKeys = () => { keyRef.current = { tab: 0, arrow: 0 }; };
+        const resetKeys = () => { keyRef.current = {}; };
         window.addEventListener('keydown', onKeyDown, true);
         window.addEventListener('blur', resetKeys);
-        return () => { window.removeEventListener('keydown', onKeyDown, true); window.removeEventListener('blur', resetKeys); };
-      }, [sessionId, visible, hintKey, accept, optimize]);
+        window.addEventListener('focusout', resetKeys, true);
+        return () => { window.removeEventListener('keydown', onKeyDown, true); window.removeEventListener('blur', resetKeys); window.removeEventListener('focusout', resetKeys, true); };
+      }, [sessionId, visible, hintKey, accept, generate, optimize]);
 
       return h('div', { ref: anchorRef, 'data-dsh-suggestions': visible && layout ? 'hint' : 'anchor', style: visible ? { position: 'absolute', top: 0, left: 0, right: 0, height: 1, padding: 0, border: 0, pointerEvents: 'none', zIndex: 3 } : { display: 'none' } },
         visible && layout ? h('div', { 'aria-hidden': true, 'data-dsh-suggestions-text': '', style: { ...layout, position: 'absolute', display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none', background: 'transparent', whiteSpace: 'nowrap', overflow: 'hidden' } },

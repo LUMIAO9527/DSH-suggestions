@@ -22,6 +22,7 @@ function mount(initial = {}) {
   let tree;
   let timerId = 0;
   let atEnd = true;
+  let now = 1000000;
   const same = (a, b) => a && b && a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
   const React = {
     createElement(type, props, ...children) { return { type, props: props || {}, children }; },
@@ -40,17 +41,23 @@ function mount(initial = {}) {
   const composer = { parentElement: null, querySelector: selector => selector === '[contenteditable="true"]' ? editor : selector === '[data-composer-placeholder]' ? placeholder : null };
   editor.parentElement = composer;
   const anchor = { parentElement: composer, getBoundingClientRect: () => state.anchorBox };
-  const document = Object.assign(new EventTarget(), { body: {}, activeElement: editor, visibilityState: 'visible' });
-  const window = Object.assign(new EventTarget(), { requestAnimationFrame(fn) { const id = ++timerId; frames.set(id, fn); return id; }, cancelAnimationFrame(id) { frames.delete(id); }, getComputedStyle(node, pseudo) { return node === anchor ? { width: '600px', height: '1px' } : pseudo ? { ...state.nativeStyle, ...state.pseudoStyle } : state.nativeStyle; }, getSelection: () => ({ rangeCount: 1, isCollapsed: true, anchorNode: textNode, anchorOffset: atEnd ? state.input.draft.length : 0, getRangeAt: () => ({ cloneRange: () => ({ selectNodeContents() {}, setEnd() {}, toString: () => atEnd ? state.input.draft : '' }) }) }), __ModuleLoader__: { load(definition) {
+  // Node's EventTarget does not normalize boolean capture on removal as a
+  // browser does. Normalize both operations so old handlers really detach.
+  class DOMEventTarget extends EventTarget {
+    addEventListener(type, listener, options) { super.addEventListener(type, listener, typeof options === 'boolean' ? { capture: options } : options); }
+    removeEventListener(type, listener, options) { super.removeEventListener(type, listener, typeof options === 'boolean' ? { capture: options } : options); }
+  }
+  const document = Object.assign(new DOMEventTarget(), { body: {}, activeElement: editor, visibilityState: 'visible' });
+  const window = Object.assign(new DOMEventTarget(), { requestAnimationFrame(fn) { const id = ++timerId; frames.set(id, fn); return id; }, cancelAnimationFrame(id) { frames.delete(id); }, getComputedStyle(node, pseudo) { return node === anchor ? { width: '600px', height: '1px' } : pseudo ? { ...state.nativeStyle, ...state.pseudoStyle } : state.nativeStyle; }, getSelection: () => ({ rangeCount: 1, isCollapsed: true, anchorNode: textNode, anchorOffset: atEnd ? state.input.draft.length : 0, getRangeAt: () => ({ cloneRange: () => ({ selectNodeContents() {}, setEnd() {}, toString: () => atEnd ? state.input.draft : '' }) }) }), __ModuleLoader__: { load(definition) {
     const plugin = definition.factory(() => React);
     plugin.apply({ slots: { inject(_name, fn) { fn(); }, register(_options, Component) { component = Component; return () => {}; } } });
   } } });
   const storage = () => { const values = new Map(); return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }; };
-  const context = vm.createContext({ window, document, localStorage: storage(), sessionStorage: storage(), AbortController, setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; }, clearTimeout(id) { timers.delete(id); }, fetch: async (_url, init) => {
+  const context = vm.createContext({ window, document, Date: class extends Date { static now() { return now; } }, localStorage: storage(), sessionStorage: storage(), AbortController, setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; }, clearTimeout(id) { timers.delete(id); }, fetch: async (_url, init) => {
     const body = JSON.parse(init.body);
     const request = { body, signal: init.signal };
     requests.push(request);
-    if (body.action === 'optimize' || state.hold) return new Promise(resolve => { request.respond = payload => resolve({ ok: true, json: async () => payload }); });
+    if (body.action === 'optimize' || body.manual || state.hold) return new Promise(resolve => { request.respond = payload => resolve({ ok: true, json: async () => payload }); });
     return { ok: true, json: async () => ({ ok: true, value: { status: 'ready', turn: state.turn, suggestions: [state.suggestion] } }) };
   } });
   vm.runInContext(source, context);
@@ -74,7 +81,7 @@ function mount(initial = {}) {
   }
   function close() { for (const hook of hooks) hook?.cleanup?.(); timers.clear(); frames.clear(); }
   render();
-  return { state, requests, changes, flush, update, tick, frame, key, visible, close, layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; } };
+  return { state, requests, changes, flush, update, tick, frame, key, visible, close, layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
 }
 
 await test('hint follows native placeholder movement, width and skin typography while visible', async () => {
@@ -158,12 +165,140 @@ await test('Tab adopts one hint into draft and IME/repeat never triggers optimiz
   const h = mount();
   try {
     await h.flush();
-    await h.key('Tab', { isComposing: true }); assert.equal(h.changes.length, 0);
+    await h.key('Tab', { isComposing: true }); assert.equal(h.changes.length, 0); assert.equal(h.visible(), true);
     await h.key('Tab'); assert.equal(h.changes[0], h.state.suggestion);
     assert.equal(h.visible(), false);
     const before = h.requests.length;
     await h.key('Tab', { repeat: true }); await h.key('Tab', { repeat: true });
     assert.equal(h.requests.length, before);
+  } finally { h.close(); }
+});
+
+await test('empty composer double Tab or double Right requests a hint without changing the draft', async () => {
+  for (const key of ['Tab', 'ArrowRight']) {
+    const h = mount({ suggestion: '' });
+    try {
+      await h.flush(); assert.equal(h.visible(), false);
+      const before = h.requests.length;
+      const first = await h.key(key);
+      assert.equal(first.defaultPrevented, key === 'Tab');
+      assert.equal(h.requests.length, before);
+      h.advance(200);
+      assert.equal((await h.key(key)).defaultPrevented, true);
+      const request = h.requests.at(-1);
+      assert.equal(request.body.action, 'suggest'); assert.equal(request.body.manual, true);
+      assert.equal(request.body.fresh, true); assert.equal(request.body.sessionId, 'own');
+      assert.equal(h.changes.length, 0);
+      await h.key(key); await h.key(key);
+      assert.equal(h.requests.length, before + 1);
+      h.state.suggestion = '把第二部分也核实，列出还没有依据的结论';
+      request.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: [h.state.suggestion] } });
+      await h.flush(); assert.equal(h.visible(), true);
+      assert.equal(h.state.input.draft, '');
+      await h.key(key); assert.equal(h.changes[0], h.state.suggestion);
+      const count = h.requests.length;
+      await h.key(key); await h.key(key);
+      assert.equal(h.requests.length, count); // Acceptance is one gesture, not draft optimization.
+    } finally { h.close(); }
+  }
+});
+
+await test('manual generation can restore an escaped hint and regenerate a cleared adopted hint', async () => {
+  const h = mount();
+  try {
+    await h.flush(); await h.key('Escape'); assert.equal(h.visible(), false);
+    await h.key('Tab'); await h.key('Tab');
+    const first = h.requests.at(-1);
+    assert.equal(first.body.manual, true);
+    first.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: [h.state.suggestion] } });
+    await h.flush(); assert.equal(h.visible(), true);
+    await h.key('Tab');
+    await h.update({ input: { ...h.state.input, draft: '' } });
+    await h.key('ArrowRight'); await h.key('ArrowRight');
+    const next = h.requests.at(-1);
+    assert.equal(next.body.manual, true); assert.equal(next.body.afterTurn, undefined);
+    next.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: [h.state.suggestion] } });
+    await h.flush(); assert.equal(h.visible(), true);
+    await h.tick(); assert.equal(h.visible(), true);
+  } finally { h.close(); }
+});
+
+await test('a hint arriving between two empty-editor presses does not steal the generation gesture', async () => {
+  const h = mount({ hold: true });
+  try {
+    await h.flush(); await h.key('Tab');
+    h.state.hold = false;
+    h.requests[0].respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: [h.state.suggestion] } });
+    await h.flush(); assert.equal(h.visible(), true);
+    await h.key('Tab');
+    assert.equal(h.requests.at(-1).body.manual, true);
+    assert.equal(h.changes.length, 0);
+  } finally { h.close(); }
+});
+
+await test('a manual suggestion cannot revive a consumed pre-send turn', async () => {
+  const h = mount();
+  try {
+    await h.flush();
+    await h.update({ session: { running: false, pendingSubmissions: [{ requestId: 'sent' }] } });
+    await h.update({ session: { running: false, pendingSubmissions: [] } });
+    await h.key('Tab'); await h.key('Tab');
+    const request = h.requests.at(-1);
+    assert.equal(request.body.manual, true); assert.equal(request.body.afterTurn, 1);
+    request.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: [h.state.suggestion] } });
+    await h.flush(); assert.equal(h.visible(), false);
+  } finally { h.close(); }
+});
+
+await test('typing, sending, switching sessions, attachments and Escape cancel manual generation', async () => {
+  for (const scenario of ['type', 'send', 'running', 'session', 'attachment', 'escape', 'phase']) {
+    const h = mount({ suggestion: '' });
+    try {
+      await h.flush(); await h.key('Tab'); await h.key('Tab');
+      const request = h.requests.at(-1);
+      assert.equal(request.body.manual, true);
+      if (scenario === 'type') await h.update({ input: { ...h.state.input, draft: '保留我的输入' } });
+      if (scenario === 'send') await h.update({ session: { running: false, pendingSubmissions: [{ requestId: 'sent' }] } });
+      if (scenario === 'running') await h.update({ session: { running: true, pendingSubmissions: [] } });
+      if (scenario === 'session') await h.update({ sessionId: 'other' });
+      if (scenario === 'attachment') await h.update({ input: { ...h.state.input, attachmentIds: ['new-file'] } });
+      if (scenario === 'escape') await h.key('Escape');
+      if (scenario === 'phase') await h.update({ input: { ...h.state.input, phase: 'submitting' } });
+      assert.equal(request.signal.aborted, true, scenario);
+      request.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['这条过期建议不应显示'] } });
+      await h.flush(); assert.equal(h.visible(), false, scenario);
+      assert.equal(h.changes.length, 0, scenario);
+    } finally { h.close(); }
+  }
+});
+
+await test('double keys require the same key within 500 ms and the same uninterrupted editor state', async () => {
+  const h = mount({ suggestion: '' });
+  try {
+    await h.flush();
+    const count = h.requests.length;
+    await h.key('Tab'); await h.key('ArrowRight'); assert.equal(h.requests.length, count);
+    h.advance(501); await h.key('ArrowRight'); assert.equal(h.requests.length, count);
+    h.blur(); await h.key('ArrowRight'); assert.equal(h.requests.length, count);
+    await h.key('ArrowRight', { isComposing: true }); await h.key('ArrowRight'); assert.equal(h.requests.length, count);
+    await h.key('ArrowRight', { repeat: true }); await h.key('ArrowRight'); assert.equal(h.requests.length, count);
+    await h.key('Tab');
+    await h.update({ input: { ...h.state.input, draft: '新草稿' } });
+    await h.key('Tab'); assert.equal(h.requests.length, count);
+    await h.key('Tab'); assert.equal(h.requests.at(-1).body.action, 'optimize');
+  } finally { h.close(); }
+});
+
+await test('no-history and busy composers do not insert or send text', async () => {
+  const h = mount({ suggestion: '', turn: 0 });
+  try {
+    await h.flush(); await h.key('Tab'); await h.key('Tab');
+    h.requests.at(-1).respond({ ok: true, value: { status: 'none', turn: 0, suggestions: [] } });
+    await h.flush(); assert.equal(h.visible(), false); assert.equal(h.changes.length, 0);
+    await h.update({ session: { running: true, pendingSubmissions: [] } });
+    const count = h.requests.length;
+    await h.key('Tab'); await h.key('Tab'); await h.key('ArrowRight'); await h.key('ArrowRight');
+    assert.equal(h.requests.length, count);
   } finally { h.close(); }
 });
 

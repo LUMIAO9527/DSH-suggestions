@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "DSH-suggestions",
-    "description": "Press Tab / Right to accept a follow-up suggestion. Double Tab or double Right at the end to improve your draft."
+    "description": "Double Tab / Right in an empty composer to request a suggestion; press once to accept it. With a draft, double Tab or double Right at the end to improve it."
   },
   "suggestion.label": "Suggested follow-up"
 }

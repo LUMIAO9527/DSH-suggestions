@@ -199,6 +199,76 @@ try {
     } finally { h.close(); }
   });
 
+  await test('manual suggestion refreshes cached abstention and keeps subsequent polling cached', async () => {
+    const h = harness({ text: '[]' });
+    try {
+      assert.equal((await h.api({ sessionId: 'own' })).value.status, 'none');
+      h.state.text = '["把第二部分也核实，列出还没有依据的结论"]';
+      assert.equal((await h.api({ sessionId: 'own' })).value.status, 'none');
+      const manual = await h.api({ sessionId: 'own', manual: true });
+      assert.equal(manual.value.status, 'ready'); assert.equal(h.calls.length, 2);
+      assert.deepEqual((await h.api({ sessionId: 'own' })).value.suggestions, manual.value.suggestions);
+      assert.equal(h.calls.length, 2);
+    } finally { h.close(); }
+  });
+
+  await test('manual retry bypasses a failed attempt but still deduplicates simultaneous requests', async () => {
+    const h = harness({ error: 'temporary failure' });
+    try {
+      assert.equal((await h.api({ sessionId: 'own' })).value.status, 'error');
+      h.state.error = undefined; h.state.hold = true;
+      const first = h.api({ sessionId: 'own', manual: true });
+      const second = h.api({ sessionId: 'own', manual: true });
+      await until(() => h.calls.length === 2);
+      h.state.release();
+      const [a, b] = await Promise.all([first, second]);
+      assert.equal(a.value.status, 'ready'); assert.deepEqual(a.value, b.value);
+      assert.equal(h.calls.length, 2);
+    } finally { h.close(); }
+  });
+
+  await test('manual generation requires usable history and respects sends and consumed turns', async () => {
+    const h = harness();
+    try {
+      h.state.events = [];
+      assert.equal((await h.api({ sessionId: 'own', manual: true })).value.status, 'none');
+      h.state.events = events().slice(0, -1);
+      assert.equal((await h.api({ sessionId: 'own', manual: true })).value.status, 'running');
+      h.state.events = events();
+      assert.equal((await h.api({ sessionId: 'own', manual: true, afterTurn: 1 })).value.status, 'none');
+      h.state.events.at(-1).data.reason.kind = 'cancelled';
+      assert.equal((await h.api({ sessionId: 'own', manual: true })).value.status, 'none');
+      assert.equal(h.calls.length, 0);
+    } finally { h.close(); }
+  });
+
+  await test('manual generation drops results when another window starts a newer turn', async () => {
+    const h = harness({ hold: true });
+    try {
+      const response = h.api({ sessionId: 'own', manual: true });
+      await until(() => h.calls.length === 1);
+      h.state.events = [...events(), { type: 'turn/start', seq: 6, data: { turn: 2 } }];
+      h.state.release();
+      const value = (await response).value;
+      assert.equal(value.status, 'running'); assert.deepEqual(value.suggestions, []);
+    } finally { h.close(); }
+  });
+
+  await test('manual retry after an abandoned automatic request starts a live generation', async () => {
+    const h = harness({ hold: true });
+    try {
+      const controller = new AbortController();
+      const automatic = h.api({ sessionId: 'own' }, controller.signal);
+      await until(() => h.calls.length === 1);
+      controller.abort();
+      const manual = h.api({ sessionId: 'own', manual: true });
+      await until(() => h.calls.length === 2);
+      h.state.release();
+      assert.equal((await manual).value.status, 'ready');
+      assert.equal((await automatic).ok, false);
+    } finally { h.close(); }
+  });
+
   await test('bridge uses explicit session or global default, never a recent unrelated session', async () => {
     const h = harness({ text: '整理报告，禁止删除原件。' });
     try {
