@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "DSH-suggestions",
-    "description": "Suggest follow-up prompts and improve drafts. Tab / Right accepts a suggestion; double Tab or double Right at the end improves the draft."
+    "description": "Press Tab / Right to accept a follow-up suggestion. Double Tab or double Right at the end to improve your draft."
   },
   "suggestion.label": "Suggested follow-up"
 }

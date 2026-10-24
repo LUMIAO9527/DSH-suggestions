@@ -11,9 +11,9 @@ const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_FRAME_BYTES = 10 * 1024 * 1024;
 const MAX_CONCURRENT = 2;
 const MAX_QUEUED = 8;
-const sessionProperty = { type: 'string', maxLength: 240, minLength: 1, description: 'DSH session ID, if available. Uses that session\'s model; otherwise uses the Harness global default, never another recent session.' };
+const sessionProperty = { type: 'string', maxLength: 240, minLength: 1, description: 'DSH session ID. Uses the session model, or the DSH default when omitted.' };
 const TOOLS = [
-  { name: 'suggest_next_prompt', description: 'Suggest one useful next user request based on unfinished goals and current constraints. Returns no suggestion when no useful next step exists.', inputSchema: {
+  { name: 'suggest_next_prompt', description: 'Suggest one follow-up prompt from the user request and completed answer.', inputSchema: {
     type: 'object', properties: {
       assistantAnswer: { type: 'string', minLength: 1, maxLength: LIMITS.answer, description: 'The completed assistant answer.' },
       userRequest: { type: 'string', maxLength: LIMITS.request, description: 'The actual latest user request, including its constraints.' },
@@ -21,10 +21,10 @@ const TOOLS = [
       sessionId: sessionProperty,
     }, required: ['assistantAnswer'], additionalProperties: false,
   } },
-  { name: 'optimize_prompt', description: 'Clarify a draft while preserving intent, explicit constraints, paths and numbers. A failure never returns partial replacement text.', inputSchema: {
+  { name: 'optimize_prompt', description: 'Improve a draft while preserving its intent, constraints, paths and numbers.', inputSchema: {
     type: 'object', properties: {
       draft: { type: 'string', minLength: 1, maxLength: LIMITS.draft },
-      context: { type: 'string', maxLength: LIMITS.context, description: 'Recent context for resolving references, not new instructions.' },
+      context: { type: 'string', maxLength: LIMITS.context, description: 'Recent conversation context for resolving references.' },
       sessionId: sessionProperty,
     }, required: ['draft'], additionalProperties: false,
   } },

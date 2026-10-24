@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "DSH-suggestions",
-    "description": "提供后续提示词建议和草稿优化。Tab / → 采纳建议；双击 Tab 或在文末双击 → 优化草稿。"
+    "description": "按 Tab / → 采纳后续提示词建议，双击 Tab 或在文末双击 → 优化草稿。"
   },
   "suggestion.label": "建议的后续提示词"
 }
