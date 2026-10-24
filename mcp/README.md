@@ -5,7 +5,7 @@
 | `suggest_next_prompt` | 根据当前请求和回答建议下一条提示词 | `assistantAnswer`：已完成的回答 |
 | `optimize_prompt` | 优化草稿，保留原意与约束 | `draft`：待优化草稿，最多 16000 字符 |
 
-`suggest_next_prompt` 可补充 `userRequest`（当前请求）和 `recentUserMessages`（最近的用户消息）。`optimize_prompt` 可补充 `context`（对话上下文）。
+`suggest_next_prompt` 可补充 `userRequest`（当前请求）和 `recentTurns`（此前的问答，按时间顺序，最多 6 轮，每轮包含 `user` 和可选的 `assistant` 文本）。也支持 `recentUserMessages`（最近的用户消息）。`optimize_prompt` 可补充 `context`（对话上下文）。
 
 复用 DSH 时，可传入 `sessionId` 使用指定会话的模型；省略时使用 DSH 默认模型。
 

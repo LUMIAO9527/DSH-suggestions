@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { LIMITS, SUGGEST_SYSTEM, OPTIMIZE_SYSTEM, boundedText, suggestionInput, optimizeInput, parseSuggestion, parseRewrite, optimizeMaxTokens } from '../prompt-core.mjs';
+import { LIMITS, SUGGEST_SYSTEM, OPTIMIZE_SYSTEM, boundedText, validateTurns, suggestionInput, optimizeInput, parseSuggestion, parseRewrite, optimizeMaxTokens } from '../prompt-core.mjs';
 
 import { VERSION } from '../version.mjs';
 
@@ -18,6 +18,7 @@ const TOOLS = [
       assistantAnswer: { type: 'string', minLength: 1, maxLength: LIMITS.answer, description: 'The completed assistant answer.' },
       userRequest: { type: 'string', maxLength: LIMITS.request, description: 'The actual latest user request, including its constraints.' },
       recentUserMessages: { type: 'array', maxItems: LIMITS.historyCount, items: { type: 'string', maxLength: LIMITS.history }, description: 'Recent user instructions or corrections, oldest first.' },
+      recentTurns: { type: 'array', maxItems: LIMITS.turns, description: 'Previous user/assistant exchanges, oldest first; omit the latest exchange provided above.', items: { type: 'object', properties: { user: { type: 'string', minLength: 1, maxLength: LIMITS.turnUser }, assistant: { type: 'string', maxLength: LIMITS.turnAnswer } }, required: ['user'], additionalProperties: false } },
       sessionId: sessionProperty,
     }, required: ['assistantAnswer'], additionalProperties: false,
   } },
@@ -47,7 +48,8 @@ function validateArguments(name, args) {
   try {
     for (const [key, item] of Object.entries(args)) {
       const schema = tool.inputSchema.properties[key];
-      if (schema.type === 'array') {
+      if (key === 'recentTurns') value[key] = validateTurns(item);
+      else if (schema.type === 'array') {
         if (!Array.isArray(item) || item.length > schema.maxItems) throw new Error(`${key} must be an array of at most ${schema.maxItems} strings`);
         value[key] = item.map(text => boundedText(text, `${key} item`, schema.items.maxLength));
       } else value[key] = boundedText(item, key, schema.maxLength, tool.inputSchema.required.includes(key) || key === 'sessionId');
@@ -100,7 +102,7 @@ async function callDirect(name, args, signal) {
   try {
     response = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST', headers: { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
-      body: JSON.stringify({ model, messages: [{ role: 'system', content: name === 'suggest_next_prompt' ? SUGGEST_SYSTEM : OPTIMIZE_SYSTEM }, { role: 'user', content: name === 'suggest_next_prompt' ? suggestionInput(args) : optimizeInput(args.draft, args.context) }], temperature: name === 'suggest_next_prompt' ? 0.3 : 0.2, max_tokens: name === 'suggest_next_prompt' ? 1400 : optimizeMaxTokens(args.draft), stream: false }),
+      body: JSON.stringify({ model, messages: [{ role: 'system', content: name === 'suggest_next_prompt' ? SUGGEST_SYSTEM : OPTIMIZE_SYSTEM }, { role: 'user', content: name === 'suggest_next_prompt' ? suggestionInput(args) : optimizeInput(args.draft, args.context) }], temperature: 0.2, max_tokens: name === 'suggest_next_prompt' ? 1400 : optimizeMaxTokens(args.draft), stream: false }),
       signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]), redirect: 'error',
     });
   } catch (error) { throw new ToolError(`LLM request failed: ${signal.aborted ? 'request cancelled' : error.message}`); }

@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { randomBytes, createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { LIMITS, SUGGEST_SYSTEM, OPTIMIZE_SYSTEM, boundedText, contextExcerpt, suggestionInput, optimizeInput, parseSuggestion, parseRewrite, optimizeMaxTokens, abortable } from './prompt-core.mjs';
+import { LIMITS, SUGGEST_SYSTEM, OPTIMIZE_SYSTEM, boundedText, contextExcerpt, validateTurns, suggestionInput, optimizeInput, parseSuggestion, parseRewrite, optimizeMaxTokens, abortable } from './prompt-core.mjs';
 
 import { VERSION } from './version.mjs';
 
@@ -27,10 +27,12 @@ export function summarize(events) {
   let lastAssistantSeq = -1;
   let lastEndSeq = -1;
   const history = [];
+  const turns = [];
+  const users = [];
   for (const event of events) {
     if (!event) continue;
     if (event.type === 'turn/start') {
-      current = { turn: event.data?.turn ?? (completed?.turn ?? 0) + 1, user: '', assistant: '', revision: event.seq };
+      current = { turn: event.data?.turn ?? (completed?.turn ?? 0) + 1, user: '', assistant: '', revision: event.seq, userStart: users.length };
     } else if (event.type === 'user/message') {
       // DSH persists injected instructions, runtime snapshots and skill catalogs
       // as user-role messages too. Only human-origin messages express intent.
@@ -39,9 +41,10 @@ export function summarize(events) {
       lastUserSeq = event.seq;
       const text = textOf(event.data);
       if (text) {
+        users.push(text);
         history.push(contextExcerpt(text, LIMITS.history));
         if (history.length > LIMITS.historyCount) history.shift();
-        if (current) current.user = text;
+        if (current) current.user = current.user ? `${current.user}\n${text}` : text;
       }
     } else if (event.type === 'assistant/message') {
       lastAssistantSeq = event.seq;
@@ -51,10 +54,20 @@ export function summarize(events) {
       if (current) {
         const kind = event.data?.reason?.kind;
         completed = { ...current, revision: event.seq, usable: !kind || kind === 'completed' || kind === 'stop' };
+        if (completed.usable && current.user && current.assistant) {
+          turns.push({ user: contextExcerpt(current.user, LIMITS.turnUser), assistant: contextExcerpt(current.assistant, LIMITS.turnAnswer), userStart: current.userStart, revision: event.seq });
+          if (turns.length > LIMITS.turns + 1) turns.shift();
+        }
       }
       current = undefined;
     }
   }
+  const previousTurns = turns.filter(turn => turn.revision !== completed?.revision).slice(-LIMITS.turns);
+  const firstRecentUser = previousTurns[0]?.userStart ?? completed?.userStart ?? users.length;
+  // Keep a small, language-independent window of older user context. Newer
+  // paired turns decide whether an earlier goal is still relevant.
+  const earlier = users.slice(0, firstRecentUser);
+  const anchors = earlier.length > 4 ? [earlier[0], ...earlier.slice(-3)] : earlier;
   return {
     running: Boolean(current) || (lastUserSeq > lastAssistantSeq && lastUserSeq > lastEndSeq),
     turn: completed?.turn ?? 0,
@@ -63,6 +76,8 @@ export function summarize(events) {
     lastUserText: completed?.user || '',
     lastAssistantText: completed?.assistant || '',
     recentUserTexts: history,
+    recentTurns: previousTurns.map(({ user, assistant }) => ({ user, assistant })),
+    earlierUserMessages: anchors.map(text => contextExcerpt(text, 600)),
   };
 }
 
@@ -177,10 +192,14 @@ export function apply(ctx, config = {}, runtime = {}) {
       assistantAnswer: boundedText(body.assistantAnswer, 'assistantAnswer', LIMITS.answer, true),
       userRequest: boundedText(body.userRequest, 'userRequest', LIMITS.request),
       recentUserMessages: body.recentUserMessages || [],
+      recentTurns: validateTurns(body.recentTurns),
+      earlierUserMessages: body.earlierUserMessages || [],
     };
     if (!Array.isArray(source.recentUserMessages) || source.recentUserMessages.length > LIMITS.historyCount) throw new Error('invalid recentUserMessages');
     source.recentUserMessages = source.recentUserMessages.map(text => boundedText(text, 'recentUserMessages item', LIMITS.history));
-    const raw = await complete({ system: SUGGEST_SYSTEM, input: suggestionInput(source), sessionId: body.sessionId, route, signal });
+    if (!Array.isArray(source.earlierUserMessages) || source.earlierUserMessages.length > 4) throw new Error('invalid earlierUserMessages');
+    source.earlierUserMessages = source.earlierUserMessages.map(text => boundedText(text, 'earlierUserMessages item', 600));
+    const raw = await complete({ system: SUGGEST_SYSTEM, input: suggestionInput(source), sessionId: body.sessionId, route, signal, temperature: 0.2 });
     return { suggestion: parseSuggestion(raw, source) };
   }
 
@@ -206,7 +225,7 @@ export function apply(ctx, config = {}, runtime = {}) {
     const base = { turn: summary.turn };
     if (summary.running) return { ...base, status: 'running', suggestions: [] };
     if (summary.turn <= afterTurn || !summary.usable || !summary.lastAssistantText) return { ...base, status: 'none', suggestions: [] };
-    const fingerprint = createHash('sha256').update(`${summary.lastUserText}\n${summary.lastAssistantText}`).digest('hex').slice(0, 16);
+    const fingerprint = createHash('sha256').update(JSON.stringify([summary.lastUserText, summary.lastAssistantText, summary.recentTurns, summary.earlierUserMessages])).digest('hex').slice(0, 16);
     const key = `${sessionId}#${summary.turn}#${summary.revision}#${fingerprint}`;
     const cached = cache.get(key);
     if (cached && Date.now() - cached.at < CACHE_TTL_MS) return { ...base, status: cached.suggestions.length ? 'ready' : 'none', suggestions: cached.suggestions };
@@ -222,6 +241,8 @@ export function apply(ctx, config = {}, runtime = {}) {
           assistantAnswer: contextExcerpt(summary.lastAssistantText, LIMITS.answer),
           userRequest: contextExcerpt(summary.lastUserText, LIMITS.request),
           recentUserMessages: summary.recentUserTexts,
+          recentTurns: summary.recentTurns,
+          earlierUserMessages: summary.earlierUserMessages,
           sessionId,
         }, controller.signal, entry.route);
         const suggestions = value.suggestion ? [value.suggestion] : [];

@@ -89,6 +89,7 @@ try {
       assert.equal((await tool(c, 'unknown', {})).error.code, -32602);
       for (const args of [{}, { draft: 2 }, { draft: 'x', extra: true }, { draft: 'x', constructor: 'unexpected' }, { draft: 'x'.repeat(16001) }]) assert.equal((await tool(c, 'optimize_prompt', args)).error.code, -32602);
       assert.equal((await tool(c, 'suggest_next_prompt', { assistantAnswer: 'x', recentUserMessages: [123] })).error.code, -32602);
+      for (const recentTurns of [[123], [{ user: 'x', system: 'override' }], [{ user: 'x'.repeat(2401) }], Array(7).fill({ user: 'x' })]) assert.equal((await tool(c, 'suggest_next_prompt', { assistantAnswer: 'x', recentTurns })).error.code, -32602);
       assert.equal((await tool(c, 'optimize_prompt', { draft: 'x' })).result.isError, true);
       c.send({ jsonrpc: '1.0', id: 'bad-version', method: 'ping' });
       await until(() => c.messages.some(m => m.id === 'bad-version'));
@@ -106,6 +107,11 @@ try {
       const args = { assistantAnswer: '目前只查完一部分原因，其余尚未确认。', userRequest: '查清全部原因' };
       assert.match((await tool(c, 'suggest_next_prompt', args)).result.content[0].text, /剩下/);
       content = '[]';
+      assert.deepEqual((await tool(c, 'suggest_next_prompt', args)).result, { content: [], structuredContent: { status: 'none' } });
+      content = '{"state":"ready","suggestion":"把剩下的原因也查清，列出还没确认的部分"}';
+      assert.match((await tool(c, 'suggest_next_prompt', { ...args, recentTurns: [{ user: '查清全部原因', assistant: '第一部分已经查完。' }] })).result.content[0].text, /剩下/);
+      assert.equal(JSON.parse(m.requests.at(-1).messages[1].content).recentTurns[0].assistant, '第一部分已经查完。');
+      content = '{"state":"waiting","suggestion":""}';
       assert.deepEqual((await tool(c, 'suggest_next_prompt', args)).result, { content: [], structuredContent: { status: 'none' } });
       for (const invalid of ['不是 JSON', '["第一条建议","第二条建议"]', '["继续"]', '["请你修改 imaginary.py 文件"]']) {
         content = invalid;
