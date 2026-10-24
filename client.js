@@ -23,12 +23,63 @@ window.__ModuleLoader__.load({
     }
 
     function composerEditor(anchor) {
+      const card = anchor?.closest?.('[data-composer-card]');
+      if (card) return card.querySelector('[data-composer-input][contenteditable="true"]') || card.querySelector('[contenteditable="true"]');
       let parent = anchor && anchor.parentElement;
       for (let i = 0; parent && i < 7 && parent !== document.body; i++, parent = parent.parentElement) {
         const editor = parent.querySelector('[contenteditable="true"]');
         if (editor) return editor;
       }
       return null;
+    }
+
+    function composerPlaceholder(editor) {
+      const card = editor?.closest?.('[data-composer-card]');
+      let parent = editor?.parentElement;
+      for (let i = 0; parent && parent !== document.body && i < 7; i++, parent = parent.parentElement) {
+        const placeholder = parent.querySelector('[data-composer-placeholder]');
+        if (placeholder) return placeholder;
+        if (parent === card) break;
+      }
+      return null;
+    }
+
+    function placeholderLayout(anchor, placeholder) {
+      if (!anchor || !placeholder) return null;
+      const native = window.getComputedStyle(placeholder);
+      const box = placeholder.getBoundingClientRect();
+      const origin = anchor.getBoundingClientRect();
+      if (native.display === 'none' || box.width <= 0 || box.height <= 0 || origin.width <= 0 || origin.height <= 0) return null;
+      const anchorStyle = window.getComputedStyle(anchor);
+      const scaleX = origin.width / parseFloat(anchorStyle.width);
+      const scaleY = origin.height / parseFloat(anchorStyle.height);
+      if (!(scaleX > 0 && scaleY > 0)) return null;
+      const px = value => parseFloat(value) || 0;
+      let textStyle = native;
+      // Composer skins can replace zero-sized native text with ::before/::after.
+      if (px(native.fontSize) === 0 || !placeholder.textContent?.trim()) {
+        for (const pseudo of ['::before', '::after']) {
+          const style = window.getComputedStyle(placeholder, pseudo);
+          if (style.content && !['none', 'normal', '""', "''"].includes(style.content) && style.display !== 'none' && px(style.fontSize) > 0) { textStyle = style; break; }
+        }
+      }
+      if (px(textStyle.fontSize) <= 0) return null;
+      const leftInset = px(native.borderLeftWidth) + px(native.paddingLeft);
+      const rightInset = px(native.borderRightWidth) + px(native.paddingRight);
+      const topInset = px(native.borderTopWidth) + px(native.paddingTop);
+      const layout = {
+        left: (box.left - origin.left) / scaleX + leftInset,
+        top: (box.top - origin.top) / scaleY + topInset,
+        width: Math.max(0, box.width / scaleX - leftInset - rightInset),
+      };
+      if (textStyle !== native) {
+        layout.left += px(textStyle.marginLeft) + px(textStyle.borderLeftWidth) + px(textStyle.paddingLeft);
+        layout.top += px(textStyle.marginTop) + px(textStyle.borderTopWidth) + px(textStyle.paddingTop);
+        layout.width = Math.max(0, layout.width - px(textStyle.marginLeft) - px(textStyle.marginRight) - px(textStyle.borderLeftWidth) - px(textStyle.borderRightWidth) - px(textStyle.paddingLeft) - px(textStyle.paddingRight));
+      }
+      for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch', 'fontVariant', 'fontFeatureSettings', 'fontVariationSettings', 'fontKerning', 'fontOpticalSizing', 'lineHeight', 'letterSpacing', 'wordSpacing', 'textAlign', 'textIndent', 'textTransform', 'direction', 'color']) layout[property] = textStyle[property];
+      layout.opacity = String((Number(native.opacity) || 0) * (textStyle === native ? 1 : Number(textStyle.opacity) || 0));
+      return layout.width > 0 ? layout : null;
     }
 
     function caretAtEnd(editor) {
@@ -61,7 +112,7 @@ window.__ModuleLoader__.load({
       const [hint, setHint] = useState(null);
       const [dismissedKey, setDismissedKey] = useState('');
       const [showChip, setShowChip] = useState(false);
-      const [focused, setFocused] = useState(false);
+      const [layout, setLayout] = useState(null);
       const anchorRef = useRef(null);
       const consumedTurnRef = useRef(0);
       const lastTurnRef = useRef(0);
@@ -173,31 +224,42 @@ window.__ModuleLoader__.load({
         return () => { cancelled = true; clearTimeout(timer); controller?.abort(); document.removeEventListener('visibilitychange', onVisibility); };
       }, [sessionId, shouldPoll]);
 
-      // Scope placeholder changes and keyboard handling to this composer, not
-      // every editor rendered in the document.
+      // Measure the native placeholder itself: mobile layouts and composer skins
+      // own its position, typography and available width, including transitions.
       useEffect(() => {
-        if (!visible) return undefined;
-        const editor = composerEditor(anchorRef.current);
-        let parent = editor?.parentElement;
+        if (!visible) { setLayout(null); return undefined; }
+        let frame;
         let placeholder;
-        for (let i = 0; parent && i < 5; i++, parent = parent.parentElement) {
-          placeholder = parent.querySelector('[data-composer-placeholder]');
-          if (placeholder) break;
-        }
-        const oldVisibility = placeholder?.style.getPropertyValue('visibility') || '';
-        const oldPriority = placeholder?.style.getPropertyPriority('visibility') || '';
-        placeholder?.style.setProperty('visibility', 'hidden', 'important');
-        const update = () => setFocused(Boolean(editor && (document.activeElement === editor || editor.contains(document.activeElement))));
-        update();
-        document.addEventListener('focusin', update, true);
-        document.addEventListener('focusout', update, true);
-        return () => {
-          if (placeholder) {
+        let oldVisibility = '';
+        let oldPriority = '';
+        let previous = '';
+        const restore = () => {
+          if (placeholder?.style.getPropertyValue('visibility') === 'hidden' && placeholder.style.getPropertyPriority('visibility') === 'important') {
             if (oldVisibility) placeholder.style.setProperty('visibility', oldVisibility, oldPriority);
             else placeholder.style.removeProperty('visibility');
           }
-          document.removeEventListener('focusin', update, true);
-          document.removeEventListener('focusout', update, true);
+        };
+        const update = () => {
+          const anchor = anchorRef.current;
+          const next = composerPlaceholder(composerEditor(anchor));
+          if (next !== placeholder) {
+            restore();
+            placeholder = next;
+            oldVisibility = placeholder?.style.getPropertyValue('visibility') || '';
+            oldPriority = placeholder?.style.getPropertyPriority('visibility') || '';
+          }
+          const measured = placeholderLayout(anchor, placeholder);
+          if (measured) {
+            if (placeholder.style.getPropertyValue('visibility') !== 'hidden' || placeholder.style.getPropertyPriority('visibility') !== 'important') placeholder.style.setProperty('visibility', 'hidden', 'important');
+          } else restore();
+          const key = JSON.stringify(measured);
+          if (key !== previous) { previous = key; setLayout(measured); }
+          frame = window.requestAnimationFrame(update);
+        };
+        update();
+        return () => {
+          window.cancelAnimationFrame(frame);
+          restore();
         };
       }, [visible, sessionId]);
 
@@ -263,11 +325,10 @@ window.__ModuleLoader__.load({
         return () => { window.removeEventListener('keydown', onKeyDown, true); window.removeEventListener('blur', resetKeys); };
       }, [sessionId, visible, hintKey, accept, optimize]);
 
-      if (!visible) return h('span', { ref: anchorRef, 'data-dsh-suggestions': 'anchor', style: { display: 'none' } });
-      return h('div', { ref: anchorRef, 'data-dsh-suggestions': 'hint', style: { position: 'absolute', top: 0, left: 0, right: 0, height: 0, pointerEvents: 'none', zIndex: 3 } },
-        h('div', { 'aria-hidden': true, style: { position: 'absolute', left: 14, top: 12, right: 8, height: 24, pointerEvents: 'none', background: 'transparent', color: 'var(--dsw-alias-label-caption)', fontFamily: 'inherit', fontSize: 'inherit', fontWeight: 'inherit', lineHeight: '24px', whiteSpace: 'nowrap', overflow: 'hidden' } },
-          h('span', { style: { display: 'inline-block', maxWidth: showChip ? 'calc(100% - 40px)' : '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle', marginLeft: focused ? 2 : 0 } }, hint.text),
-          showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: '按 Tab 或 → 采用这条建议', onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginLeft: 8, color: 'var(--dsw-alias-label-caption)', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycapSvg()) : null));
+      return h('div', { ref: anchorRef, 'data-dsh-suggestions': visible && layout ? 'hint' : 'anchor', style: visible ? { position: 'absolute', top: 0, left: 0, right: 0, height: 1, padding: 0, border: 0, pointerEvents: 'none', zIndex: 3 } : { display: 'none' } },
+        visible && layout ? h('div', { 'aria-hidden': true, 'data-dsh-suggestions-text': '', style: { ...layout, position: 'absolute', display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none', background: 'transparent', whiteSpace: 'nowrap', overflow: 'hidden' } },
+          h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, hint.text),
+          showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: '按 Tab 或 → 采用这条建议', onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycapSvg()) : null) : null);
     }
 
     return { inject: ['slots'], apply(ctx) { ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register({ name: 'conversation.input.overlay', id: 'dsh-suggestions', order: 30 }, SuggestionHint)); } };

@@ -6,9 +6,12 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('./client.js', import.meta.url), 'utf8');
 
 function mount(initial = {}) {
-  const state = { sessionId: 'own', input: { draft: '', phase: 'plain', attachmentIds: [], queue: [] }, session: { running: false, pendingSubmissions: [] }, turn: 1, suggestion: '把第二部分也核实，列出还没有依据的结论', hold: false, ...initial };
+  const state = { sessionId: 'own', input: { draft: '', phase: 'plain', attachmentIds: [], queue: [] }, session: { running: false, pendingSubmissions: [] }, turn: 1, suggestion: '把第二部分也核实，列出还没有依据的结论', hold: false,
+    anchorBox: { left: 100, top: 200, width: 600, height: 1 }, nativeBox: { left: 114, top: 212, width: 578, height: 24 },
+    nativeStyle: { display: 'block', fontFamily: 'Arial', fontSize: '14px', lineHeight: '24px', fontWeight: '400', color: 'rgb(128, 128, 128)', opacity: '1' }, pseudoStyle: { content: 'none' }, ...initial };
   const hooks = [];
   const timers = new Map();
+  const frames = new Map();
   const requests = [];
   const changes = [];
   const styleMap = new Map();
@@ -31,14 +34,14 @@ function mount(initial = {}) {
     useCallback(fn, deps) { const index = cursor++; if (!same(hooks[index]?.deps, deps)) hooks[index] = { value: fn, deps }; return hooks[index].value; },
     useEffect(fn, deps) { const index = cursor++; if (!same(hooks[index]?.deps, deps)) effects.push(() => { hooks[index]?.cleanup?.(); hooks[index] = { deps, cleanup: fn() }; }); },
   };
-  const placeholder = { style: { getPropertyValue: name => styleMap.get(name)?.value || '', getPropertyPriority: name => styleMap.get(name)?.priority || '', setProperty: (name, value, priority) => styleMap.set(name, { value, priority }), removeProperty: name => styleMap.delete(name) } };
+  const placeholder = { textContent: 'Message', getBoundingClientRect: () => state.nativeBox, style: { getPropertyValue: name => styleMap.get(name)?.value || '', getPropertyPriority: name => styleMap.get(name)?.priority || '', setProperty: (name, value, priority) => styleMap.set(name, { value, priority }), removeProperty: name => styleMap.delete(name) } };
   const editor = { isContentEditable: true, contains(node) { return node === editor || node === textNode; }, focus() { document.activeElement = editor; }, get textContent() { return state.input.draft; } };
   const textNode = { parentElement: editor };
   const composer = { parentElement: null, querySelector: selector => selector === '[contenteditable="true"]' ? editor : selector === '[data-composer-placeholder]' ? placeholder : null };
   editor.parentElement = composer;
-  const anchor = { parentElement: composer };
+  const anchor = { parentElement: composer, getBoundingClientRect: () => state.anchorBox };
   const document = Object.assign(new EventTarget(), { body: {}, activeElement: editor, visibilityState: 'visible' });
-  const window = Object.assign(new EventTarget(), { getSelection: () => ({ rangeCount: 1, isCollapsed: true, anchorNode: textNode, anchorOffset: atEnd ? state.input.draft.length : 0, getRangeAt: () => ({ cloneRange: () => ({ selectNodeContents() {}, setEnd() {}, toString: () => atEnd ? state.input.draft : '' }) }) }), __ModuleLoader__: { load(definition) {
+  const window = Object.assign(new EventTarget(), { requestAnimationFrame(fn) { const id = ++timerId; frames.set(id, fn); return id; }, cancelAnimationFrame(id) { frames.delete(id); }, getComputedStyle(node, pseudo) { return node === anchor ? { width: '600px', height: '1px' } : pseudo ? { ...state.nativeStyle, ...state.pseudoStyle } : state.nativeStyle; }, getSelection: () => ({ rangeCount: 1, isCollapsed: true, anchorNode: textNode, anchorOffset: atEnd ? state.input.draft.length : 0, getRangeAt: () => ({ cloneRange: () => ({ selectNodeContents() {}, setEnd() {}, toString: () => atEnd ? state.input.draft : '' }) }) }), __ModuleLoader__: { load(definition) {
     const plugin = definition.factory(() => React);
     plugin.apply({ slots: { inject(_name, fn) { fn(); }, register(_options, Component) { component = Component; return () => {}; } } });
   } } });
@@ -63,15 +66,49 @@ function mount(initial = {}) {
   function visible() { return tree?.props['data-dsh-suggestions'] === 'hint'; }
   async function update(values) { Object.assign(state, values); render(); await flush(); }
   async function tick() { const [id, timer] = [...timers.entries()].sort((a, b) => a[1].ms - b[1].ms)[0] || []; if (timer) { timers.delete(id); timer.fn(); } await flush(); }
+  async function frame() { const pending = [...frames.values()]; frames.clear(); pending.forEach(fn => fn()); await flush(); }
   async function key(key, flags = {}) {
     const event = new Event('keydown', { cancelable: true });
     Object.assign(event, { key, isComposing: false, keyCode: 0, repeat: false, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...flags });
     window.dispatchEvent(event); await flush(); return event;
   }
-  function close() { for (const hook of hooks) hook?.cleanup?.(); timers.clear(); }
+  function close() { for (const hook of hooks) hook?.cleanup?.(); timers.clear(); frames.clear(); }
   render();
-  return { state, requests, changes, flush, update, tick, key, visible, close, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; } };
+  return { state, requests, changes, flush, update, tick, frame, key, visible, close, layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; } };
 }
+
+await test('hint follows native placeholder movement, width and skin typography while visible', async () => {
+  const h = mount();
+  try {
+    await h.flush();
+    assert.equal(h.layout().left, 14); assert.equal(h.layout().top, 12); assert.equal(h.layout().width, 578);
+    h.state.nativeBox = { left: 153, top: 238, width: 220, height: 32 };
+    h.state.nativeStyle = { ...h.state.nativeStyle, fontSize: '18px', lineHeight: '32px' };
+    await h.frame();
+    assert.equal(h.layout().left, 53); assert.equal(h.layout().top, 38); assert.equal(h.layout().width, 220);
+    assert.equal(h.layout().fontSize, '18px'); assert.equal(h.layout().lineHeight, '32px');
+    assert.equal(h.placeholderVisible(), false);
+    await h.frame(); assert.equal(h.placeholderVisible(), false);
+    // A scaled card still uses its own CSS pixel coordinates.
+    h.state.anchorBox = { left: 100, top: 200, width: 480, height: 0.8 };
+    h.state.nativeBox = { left: 142.4, top: 230.4, width: 176, height: 25.6 };
+    await h.frame();
+    assert.ok(Math.abs(h.layout().left - 53) < 0.01); assert.ok(Math.abs(h.layout().top - 38) < 0.01);
+    assert.equal(h.layout().width, 220);
+  } finally { h.close(); }
+});
+
+await test('zero-sized native text uses the skin pseudo-element font; hidden placeholder is restored', async () => {
+  const h = mount({ nativeStyle: { display: 'block', fontSize: '0px', lineHeight: '0px', opacity: '1' }, pseudoStyle: { content: '"Chief"', display: 'block', fontFamily: 'Arial', fontSize: '14px', lineHeight: '24px', color: 'rgb(123, 123, 123)', opacity: '1' } });
+  try {
+    await h.flush(); assert.equal(h.visible(), true);
+    assert.equal(h.layout().fontSize, '14px'); assert.equal(h.layout().lineHeight, '24px');
+    h.state.nativeBox = { left: 114, top: 212, width: 0, height: 0 };
+    await h.frame(); assert.equal(h.visible(), false); assert.equal(h.placeholderVisible(), true);
+    h.state.nativeBox = { left: 124, top: 222, width: 300, height: 24 };
+    await h.frame(); assert.equal(h.visible(), true); assert.equal(h.layout().left, 24);
+  } finally { h.close(); assert.equal(h.placeholderVisible(), true); }
+});
 
 await test('plain-phase send hides old hint immediately and only a later turn can show again', async () => {
   const h = mount();
