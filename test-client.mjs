@@ -81,7 +81,7 @@ function mount(initial = {}) {
   }
   function close() { for (const hook of hooks) hook?.cleanup?.(); timers.clear(); frames.clear(); }
   render();
-  return { state, requests, changes, flush, update, tick, frame, key, visible, close, layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
+  return { state, requests, changes, flush, update, tick, frame, key, visible, close, text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
 }
 
 await test('hint follows native placeholder movement, width and skin typography while visible', async () => {
@@ -328,5 +328,67 @@ await test('double-right requires both presses at the end, and one request stays
     await h.key('Tab'); await h.key('Tab'); assert.equal(h.requests.length, 1);
     h.requests[0].respond({ ok: true, value: { status: 'ready', prompt: '请按要求整理这份报告。' } });
     await h.flush(); assert.equal(h.changes[0], '请按要求整理这份报告。');
+  } finally { h.close(); }
+});
+
+await test('double Down walks forward through offered suggestions and regenerates at the tail', async () => {
+  const h = mount();
+  try {
+    await h.flush();
+    assert.equal(h.visible(), true);
+    const first = h.state.suggestion;
+    assert.equal(h.text(), first);
+
+    const count = h.requests.length;
+    await h.key('ArrowDown'); assert.equal(h.requests.length, count); // One press only arms the gesture.
+    h.advance(200);
+    await h.key('ArrowDown');
+    const second = h.requests.at(-1);
+    assert.equal(second.body.action, 'suggest'); assert.equal(second.body.manual, true);
+    assert.equal(second.body.sessionId, 'own');
+    second.respond({ ok: true, value: { status: 'ready', turn: 2, suggestions: ['第二条建议'] } });
+    await h.flush();
+    assert.equal(h.text(), '第二条建议'); assert.equal(h.visible(), true);
+    assert.equal(h.state.input.draft, ''); // Browsing never writes into the composer.
+
+    await h.key('ArrowUp'); h.advance(200); await h.key('ArrowUp');
+    assert.equal(h.text(), first);
+
+    const stable = h.requests.length;
+    await h.key('ArrowUp'); h.advance(200); await h.key('ArrowUp');
+    assert.equal(h.requests.length, stable); assert.equal(h.text(), first);
+
+    await h.key('ArrowDown'); h.advance(200); await h.key('ArrowDown');
+    assert.equal(h.text(), '第二条建议');
+
+    // A dismissed hint can still be browsed, and the tail asks for a new one.
+    await h.key('Escape'); assert.equal(h.visible(), false);
+    await h.key('ArrowDown'); h.advance(200); await h.key('ArrowDown');
+    const third = h.requests.at(-1);
+    assert.equal(third.body.manual, true);
+    third.respond({ ok: true, value: { status: 'ready', turn: 3, suggestions: ['第三条建议'] } });
+    await h.flush();
+    assert.equal(h.visible(), true); assert.equal(h.text(), '第三条建议');
+  } finally { h.close(); }
+});
+
+await test('repeat keys, IME composition and a draft never step the candidate list', async () => {
+  const h = mount();
+  try {
+    await h.flush(); assert.equal(h.visible(), true);
+    const count = h.requests.length;
+    await h.key('ArrowDown', { isComposing: true });
+    await h.key('ArrowDown');
+    assert.equal(h.requests.length, count);
+    h.advance(600);
+    await h.key('ArrowDown', { repeat: true });
+    await h.key('ArrowDown');
+    assert.equal(h.requests.length, count);
+    h.advance(600);
+    await h.update({ input: { ...h.state.input, draft: '整理报告' } });
+    await h.key('ArrowDown'); h.advance(200); await h.key('ArrowDown');
+    await h.key('ArrowUp'); h.advance(200); await h.key('ArrowUp');
+    assert.equal(h.requests.length, count);
+    assert.equal(h.changes.length, 0);
   } finally { h.close(); }
 });

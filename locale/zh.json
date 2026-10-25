@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "DSH-suggestions",
-    "description": "空输入框双击 Tab / → 生成建议，单击采纳；输入草稿后双击 Tab 或在文末双击 → 优化。"
+    "description": "空输入框双击 Tab / → 生成建议，单击采纳，双击 ↑ / ↓ 翻看；输入草稿后双击 Tab 或在文末双击 → 优化。"
   },
   "suggestion.label": "建议的后续提示词"
 }
