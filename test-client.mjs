@@ -203,7 +203,7 @@ await test('empty composer double Tab or double Right requests a hint without ch
   }
 });
 
-await test('manual generation can restore an escaped hint and regenerate a cleared adopted hint', async () => {
+await test('manual generation restores an escaped hint, and clearing the adopted draft restores it without a call', async () => {
   const h = mount();
   try {
     await h.flush(); await h.key('Escape'); assert.equal(h.visible(), false);
@@ -213,13 +213,12 @@ await test('manual generation can restore an escaped hint and regenerate a clear
     first.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: [h.state.suggestion] } });
     await h.flush(); assert.equal(h.visible(), true);
     await h.key('Tab');
+    const count = h.requests.length;
     await h.update({ input: { ...h.state.input, draft: '' } });
-    await h.key('ArrowRight'); await h.key('ArrowRight');
-    const next = h.requests.at(-1);
-    assert.equal(next.body.manual, true); assert.equal(next.body.afterTurn, undefined);
-    next.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: [h.state.suggestion] } });
-    await h.flush(); assert.equal(h.visible(), true);
-    await h.tick(); assert.equal(h.visible(), true);
+    assert.equal(h.visible(), true);
+    assert.equal(h.text(), h.state.suggestion);
+    assert.equal(h.requests.length, count); // No request: the candidate is restored.
+    await h.key('Tab'); assert.equal(h.changes.at(-1), h.state.suggestion);
   } finally { h.close(); }
 });
 
@@ -331,7 +330,7 @@ await test('double-right requires both presses at the end, and one request stays
   } finally { h.close(); }
 });
 
-await test('double Down walks forward through offered suggestions and regenerates at the tail', async () => {
+await test('double Right Alt walks forward through offered suggestions and regenerates at the tail', async () => {
   const h = mount();
   try {
     await h.flush();
@@ -340,9 +339,9 @@ await test('double Down walks forward through offered suggestions and regenerate
     assert.equal(h.text(), first);
 
     const count = h.requests.length;
-    await h.key('ArrowDown'); assert.equal(h.requests.length, count); // One press only arms the gesture.
+    await h.key('Alt', { code: 'AltRight' }); assert.equal(h.requests.length, count); // One press only arms the gesture.
     h.advance(200);
-    await h.key('ArrowDown');
+    await h.key('Alt', { code: 'AltRight' });
     const second = h.requests.at(-1);
     assert.equal(second.body.action, 'suggest'); assert.equal(second.body.manual, true);
     assert.equal(second.body.sessionId, 'own');
@@ -351,19 +350,19 @@ await test('double Down walks forward through offered suggestions and regenerate
     assert.equal(h.text(), '第二条建议'); assert.equal(h.visible(), true);
     assert.equal(h.state.input.draft, ''); // Browsing never writes into the composer.
 
-    await h.key('ArrowUp'); h.advance(200); await h.key('ArrowUp');
+    await h.key('Alt', { code: 'AltLeft' }); h.advance(200); await h.key('Alt', { code: 'AltLeft' });
     assert.equal(h.text(), first);
 
     const stable = h.requests.length;
-    await h.key('ArrowUp'); h.advance(200); await h.key('ArrowUp');
+    await h.key('Alt', { code: 'AltLeft' }); h.advance(200); await h.key('Alt', { code: 'AltLeft' });
     assert.equal(h.requests.length, stable); assert.equal(h.text(), first);
 
-    await h.key('ArrowDown'); h.advance(200); await h.key('ArrowDown');
+    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
     assert.equal(h.text(), '第二条建议');
 
     // A dismissed hint can still be browsed, and the tail asks for a new one.
     await h.key('Escape'); assert.equal(h.visible(), false);
-    await h.key('ArrowDown'); h.advance(200); await h.key('ArrowDown');
+    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
     const third = h.requests.at(-1);
     assert.equal(third.body.manual, true);
     third.respond({ ok: true, value: { status: 'ready', turn: 3, suggestions: ['第三条建议'] } });
@@ -372,23 +371,63 @@ await test('double Down walks forward through offered suggestions and regenerate
   } finally { h.close(); }
 });
 
-await test('repeat keys, IME composition and a draft never step the candidate list', async () => {
+await test('repeat keys, IME composition, combination keys and a draft never step the candidate list', async () => {
   const h = mount();
   try {
     await h.flush(); assert.equal(h.visible(), true);
     const count = h.requests.length;
-    await h.key('ArrowDown', { isComposing: true });
-    await h.key('ArrowDown');
+    await h.key('Alt', { code: 'AltRight', isComposing: true });
+    await h.key('Alt', { code: 'AltRight' });
     assert.equal(h.requests.length, count);
     h.advance(600);
-    await h.key('ArrowDown', { repeat: true });
-    await h.key('ArrowDown');
+    await h.key('Alt', { code: 'AltRight', repeat: true });
+    await h.key('Alt', { code: 'AltRight' });
     assert.equal(h.requests.length, count);
     h.advance(600);
-    await h.update({ input: { ...h.state.input, draft: '整理报告' } });
+    // Alt+Tab cancels the gesture instead of browsing or accepting.
+    await h.key('Alt', { code: 'AltRight' });
+    await h.key('Tab', { altKey: true });
+    await h.key('Alt', { code: 'AltRight' });
+    assert.equal(h.requests.length, count);
+    assert.equal(h.changes.length, 0);
+    h.advance(600);
+    // A plain Up/Down is no longer a browsing gesture.
     await h.key('ArrowDown'); h.advance(200); await h.key('ArrowDown');
     await h.key('ArrowUp'); h.advance(200); await h.key('ArrowUp');
     assert.equal(h.requests.length, count);
+    h.advance(600);
+    await h.update({ input: { ...h.state.input, draft: '整理报告' } });
+    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
+    await h.key('Alt', { code: 'AltLeft' }); h.advance(200); await h.key('Alt', { code: 'AltLeft' });
+    assert.equal(h.requests.length, count);
     assert.equal(h.changes.length, 0);
+  } finally { h.close(); }
+});
+
+await test('deleting an adopted suggestion shows it again without another model call', async () => {
+  const h = mount();
+  try {
+    await h.flush(); assert.equal(h.visible(), true);
+    const first = h.state.suggestion;
+    await h.key('Tab'); assert.equal(h.changes[0], first);
+    assert.equal(h.visible(), false);
+    const count = h.requests.length;
+    await h.update({ input: { ...h.state.input, draft: '' } });
+    assert.equal(h.visible(), true);
+    assert.equal(h.text(), first);
+    assert.equal(h.requests.length, count); // Restored from the candidate list, not the model.
+    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
+    assert.equal(h.requests.length, count + 1); // Still browsable from the restored candidate.
+  } finally { h.close(); }
+});
+
+await test('a sent message does not resurrect the adopted suggestion', async () => {
+  const h = mount();
+  try {
+    await h.flush();
+    await h.key('Tab');
+    await h.update({ session: { running: false, pendingSubmissions: [{ requestId: 'sent' }] } });
+    await h.update({ input: { ...h.state.input, draft: '' }, session: { running: true, pendingSubmissions: [] } });
+    assert.equal(h.visible(), false);
   } finally { h.close(); }
 });

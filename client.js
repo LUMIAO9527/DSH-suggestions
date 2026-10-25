@@ -127,6 +127,8 @@ window.__ModuleLoader__.load({
       const candidatesRef = useRef([]);
       const candidateIndexRef = useRef(-1);
       const shownRef = useRef('');
+      const altRef = useRef(null);
+      const adoptedRef = useRef(null);
       const activeRef = useRef(null);
       activeRef.current = { sessionId, draft, empty, idle, runningTurn, sending };
       const hintKey = hint ? `${hint.sessionId}#${hint.turn}` : '';
@@ -138,6 +140,19 @@ window.__ModuleLoader__.load({
         setHint(null);
       }, []);
 
+      // Deleting an adopted suggestion brings that same candidate back without
+      // another model call, and the browsing cursor stays where it was.
+      const restoreAdopted = useCallback(() => {
+        const adopted = adoptedRef.current;
+        if (!adopted) return;
+        const index = candidatesRef.current.indexOf(adopted.text);
+        if (index < 0) return;
+        candidateIndexRef.current = index;
+        shownRef.current = adopted.text;
+        setDismissedKey('');
+        setHint({ sessionId: activeRef.current.sessionId, turn: lastTurnRef.current, text: adopted.text });
+      }, []);
+
       useEffect(() => {
         consumedTurnRef.current = 0;
         sentTurnRef.current = 0;
@@ -147,6 +162,7 @@ window.__ModuleLoader__.load({
         keyRef.current = {};
         candidatesRef.current = [];
         candidateIndexRef.current = -1;
+        adoptedRef.current = null;
         setGenerating(false);
         clearHint();
         setDismissedKey('');
@@ -168,6 +184,7 @@ window.__ModuleLoader__.load({
         lastEmptyAtRef.current = Date.now();
         candidatesRef.current = [];
         candidateIndexRef.current = -1;
+        adoptedRef.current = null;
         clearHint();
         optimizationRef.current?.controller.abort();
         optimizationRef.current = null;
@@ -178,10 +195,12 @@ window.__ModuleLoader__.load({
       }, [sessionId, pendingSubmissionKey, runningTurn, clearHint]);
 
       useEffect(() => {
-        if (previousDraftRef.current !== draft && (keyRef.current.mode !== 'accepted' || keyRef.current.draft !== draft)) keyRef.current = {};
-        if (previousDraftRef.current.trim() && !draft.trim()) lastEmptyAtRef.current = Date.now();
+        const previousDraft = previousDraftRef.current;
+        if (previousDraft !== draft && (keyRef.current.mode !== 'accepted' || keyRef.current.draft !== draft)) keyRef.current = {};
+        if (previousDraft.trim() && !draft.trim()) lastEmptyAtRef.current = Date.now();
         previousDraftRef.current = draft;
         if (draft.trim() || !idle) clearHint();
+        else if (previousDraft.trim() && adoptedRef.current && previousDraft === adoptedRef.current.text) restoreAdopted();
         if (phase === 'submitting' || phase === 'adjudicating') {
           consumedTurnRef.current = Math.max(consumedTurnRef.current, lastTurnRef.current);
           sentTurnRef.current = Math.max(sentTurnRef.current, consumedTurnRef.current);
@@ -192,7 +211,7 @@ window.__ModuleLoader__.load({
           pending.controller.abort();
           optimizationRef.current = null;
         }
-      }, [draft, idle, phase, sessionId, clearHint]);
+      }, [draft, idle, phase, sessionId, clearHint, restoreAdopted]);
 
       useEffect(() => {
         const pending = generationRef.current;
@@ -328,8 +347,7 @@ window.__ModuleLoader__.load({
         keyRef.current = { mode: 'accepted', at: Date.now(), draft: hint.text };
         inputActions.setDraft(hint.text);
         consumedTurnRef.current = Math.max(consumedTurnRef.current, hint.turn);
-        candidatesRef.current = [];
-        candidateIndexRef.current = -1;
+        adoptedRef.current = { text: hint.text };
         clearHint();
         editor?.focus();
       }, [visible, hint, sessionId, inputActions, clearHint]);
@@ -413,11 +431,26 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!sessionId) return undefined;
         const onKeyDown = event => {
-          if (event.isComposing || event.keyCode === 229 || event.repeat || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) { keyRef.current = {}; return; }
+          if (event.isComposing || event.keyCode === 229 || event.repeat) { keyRef.current = {}; return; }
           const editor = composerEditor(anchorRef.current);
-          if (!editor || !(document.activeElement === editor || editor.contains(document.activeElement))) { keyRef.current = {}; return; }
+          if (!editor || !(document.activeElement === editor || editor.contains(document.activeElement))) { keyRef.current = {}; altRef.current = null; return; }
           const current = activeRef.current;
-          if (!current.idle || current.sending || current.runningTurn) { keyRef.current = {}; return; }
+          if (!current.idle || current.sending || current.runningTurn) { keyRef.current = {}; altRef.current = null; return; }
+          // Alt on its own browses the candidates: Right Alt moves forward and asks
+          // for a new one at the tail, Left Alt walks back. It stays native once
+          // the composer holds a draft, and any other key cancels the gesture.
+          if (event.key === 'Alt' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+            if (!current.empty || (!hintKey && candidateIndexRef.current < 0)) { altRef.current = null; return; }
+            const at = Date.now();
+            const code = event.code === 'AltRight' ? 'AltRight' : 'AltLeft';
+            const previousAlt = altRef.current;
+            const doubledAlt = previousAlt?.code === code && at - previousAlt.at <= 500;
+            altRef.current = doubledAlt ? null : { code, at };
+            event.preventDefault();
+            if (doubledAlt) step(code === 'AltRight' ? 1 : -1);
+            return;
+          }
+          if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) { keyRef.current = {}; altRef.current = null; return; }
           if (event.key === 'Escape' && (visible || generationRef.current)) {
             setDismissedKey(hintKey || `${sessionId}#${lastTurnRef.current}`);
             generationRef.current?.controller.abort();
@@ -428,7 +461,6 @@ window.__ModuleLoader__.load({
           }
           const now = Date.now();
           const shortcut = event.key === 'Tab' || event.key === 'ArrowRight';
-          const stepKey = event.key === 'ArrowDown' || event.key === 'ArrowUp';
           const previous = keyRef.current;
           const mode = current.empty ? 'empty' : 'draft';
           const doubled = previous.key === event.key && previous.mode === mode && previous.draft === current.draft && now - previous.at <= 500;
@@ -436,16 +468,6 @@ window.__ModuleLoader__.load({
           // the suggestion that the first press has just inserted.
           if (shortcut && previous.mode === 'accepted' && previous.draft === current.draft && now - previous.at <= 500) { event.preventDefault(); event.stopPropagation(); return; }
           if (current.empty) {
-            // Up/Down browse the candidates offered in this session: Down moves
-            // forward and asks for a new one at the tail, Up walks back. Both stay
-            // native as soon as the composer holds a draft.
-            if (stepKey) {
-              if (!hintKey && candidateIndexRef.current < 0) { keyRef.current = {}; return; }
-              event.preventDefault(); event.stopPropagation();
-              keyRef.current = doubled ? {} : { key: event.key, mode, draft: current.draft, at: now };
-              if (doubled) step(event.key === 'ArrowDown' ? 1 : -1);
-              return;
-            }
             if (visible && shortcut && !doubled) { event.preventDefault(); event.stopPropagation(); accept(); return; }
             if (!shortcut) { keyRef.current = {}; return; }
           } else if (event.key !== 'Tab' && !(event.key === 'ArrowRight' && caretAtEnd(editor))) {
@@ -458,7 +480,7 @@ window.__ModuleLoader__.load({
           keyRef.current = doubled ? {} : { key: event.key, mode, draft: current.draft, at: now };
           if (doubled) { if (current.empty) generate(); else optimize(); }
         };
-        const resetKeys = () => { keyRef.current = {}; };
+        const resetKeys = () => { keyRef.current = {}; altRef.current = null; };
         window.addEventListener('keydown', onKeyDown, true);
         window.addEventListener('blur', resetKeys);
         window.addEventListener('focusout', resetKeys, true);
