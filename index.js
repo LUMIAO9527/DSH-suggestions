@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { randomBytes, createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { LIMITS, SUGGEST_SYSTEM, OPTIMIZE_SYSTEM, boundedText, contextExcerpt, validateTurns, suggestionInput, optimizeInput, parseSuggestion, parseRewrite, optimizeMaxTokens, abortable } from './prompt-core.mjs';
+import { LIMITS, SUGGEST_SYSTEM, OPTIMIZE_SYSTEM, NOVELTY_SYSTEM, boundedText, contextExcerpt, validateTurns, suggestionInput, optimizeInput, parseSuggestion, parseNovelty, parseRewrite, optimizeMaxTokens, abortable } from './prompt-core.mjs';
 
 import { VERSION } from './version.mjs';
 
@@ -253,8 +253,20 @@ export function apply(ctx, config = {}, runtime = {}) {
     source.earlierUserMessages = source.earlierUserMessages.map(text => boundedText(text, 'earlierUserMessages item', 600));
     if (!Array.isArray(source.previousSuggestions) || source.previousSuggestions.length > 10) throw new Error('invalid previousSuggestions');
     source.previousSuggestions = source.previousSuggestions.map(text => boundedText(text, 'previousSuggestions item', LIMITS.suggestion, true));
-    const raw = await complete({ system: SUGGEST_SYSTEM, input: suggestionInput(source), sessionId: body.sessionId, route, signal, temperature: 0.2 });
-    return { suggestion: parseSuggestion(raw, source) };
+    const controller = new AbortController();
+    const cancel = () => controller.abort(signal.reason);
+    if (signal?.aborted) controller.abort(signal.reason);
+    signal?.addEventListener('abort', cancel, { once: true });
+    const timeout = setTimeout(() => controller.abort(new Error('suggestion request timed out')), timeoutMs);
+    try {
+      const raw = await complete({ system: SUGGEST_SYSTEM, input: suggestionInput(source), sessionId: body.sessionId, route, signal: controller.signal, temperature: 0.2 });
+      let suggestion = parseSuggestion(raw, source);
+      if (suggestion && source.previousSuggestions.length) {
+        const judgement = await complete({ system: NOVELTY_SYSTEM, input: JSON.stringify({ candidate: suggestion, previousSuggestions: source.previousSuggestions }), sessionId: body.sessionId, route, signal: controller.signal, maxTokens: 160, temperature: 0 });
+        if (!parseNovelty(judgement)) suggestion = '';
+      }
+      return { suggestion };
+    } finally { clearTimeout(timeout); signal?.removeEventListener('abort', cancel); }
   }
 
   async function optimize(body, signal, route) {

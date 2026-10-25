@@ -6,7 +6,7 @@ import { dirname, resolve, join, sep } from 'node:path';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { apply, summarize, normalizeKeys } from './index.js';
-import { LIMITS, contextExcerpt, validateTurns, suggestionInput, parseSuggestion, parseRewrite, optimizeMaxTokens } from './prompt-core.mjs';
+import { LIMITS, NOVELTY_SYSTEM, contextExcerpt, validateTurns, suggestionInput, parseSuggestion, parseNovelty, parseRewrite, optimizeMaxTokens } from './prompt-core.mjs';
 
 const scratch = resolve(dirname(fileURLToPath(import.meta.url)), './_wip/tests');
 mkdirSync(scratch, { recursive: true });
@@ -41,7 +41,7 @@ function harness(options = {}) {
         calls.push(request);
         if (state.hold) await new Promise((resolve, reject) => { request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }); state.release = resolve; });
         if (state.error) throw new Error(state.error);
-        yield { type: 'text-delta', text: state.text };
+        yield { type: 'text-delta', text: request.system === NOVELTY_SYSTEM ? state.novelty || '{"duplicate":false}' : state.text };
         if (state.finish) yield { type: 'finish', reason: { kind: state.finish } };
       },
     },
@@ -63,6 +63,27 @@ function harness(options = {}) {
 }
 
 try {
+  await test('semantic duplicate review rejects paraphrases and accepts a distinct request', async () => {
+    const h = harness({ text: '["现在讲公式吧。"]', novelty: '{"duplicate":true}' });
+    try {
+      const previousSuggestions = ['继续讲公式。'];
+      assert.equal((await h.api({ sessionId: 'own', manual: true, previousSuggestions })).value.status, 'none');
+      assert.equal(h.calls[1].system, NOVELTY_SYSTEM);
+      assert.deepEqual(JSON.parse(h.calls[1].messages[0].content[0].text), { candidate: '现在讲公式吧。', previousSuggestions });
+      h.state.text = '["比较两种公式各自的适用条件。"]'; h.state.novelty = '{"duplicate":false}';
+      assert.equal((await h.api({ sessionId: 'own', manual: true, previousSuggestions })).value.status, 'ready');
+    } finally { h.close(); }
+  });
+
+  await test('malformed novelty decisions cannot publish an unreviewed candidate', async () => {
+    const h = harness({ novelty: 'not JSON' });
+    try {
+      assert.equal((await h.api({ sessionId: 'own', manual: true, previousSuggestions: ['请继续解释第二部分。'] })).value.status, 'error');
+      assert.equal(parseNovelty('{"duplicate":true}'), false);
+      assert.equal(parseNovelty('{"duplicate":false}'), true);
+      for (const value of ['{}', '{"duplicate":"false"}', '{"duplicate":false,"extra":true}']) assert.throws(() => parseNovelty(value));
+    } finally { h.close(); }
+  });
   await test('new candidates include offered choices and duplicate output leaves the cached choice usable', async () => {
     const h = harness();
     try {
