@@ -7,13 +7,13 @@
 **Desktop**：在插件管理中从 GitHub 安装，填写：
 
 ```text
-github:LUMIAO9527/DSH-suggestions#v0.5.0
+github:LUMIAO9527/DSH-suggestions#v0.5.1
 ```
 
 **Web / CLI**：
 
 ```sh
-dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.5.0
+dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.5.1
 ```
 
 ## 使用

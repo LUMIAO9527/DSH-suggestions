@@ -523,7 +523,7 @@ window.__ModuleLoader__.load({
     function SettingsCard() {
       const zh = typeof navigator !== 'undefined' && /^zh/i.test(navigator.language || '');
       const TEXT = zh ? {
-        title: '后续提示词建议',
+        title: '输入框建议',
         hint: '点“修改”后按下要用的键。一个键只给一个动作，左、右 Alt 是分开的。',
         composer: '采纳 / 生成 / 优化',
         composerNote: '单击采纳，双击生成或优化草稿',
@@ -537,7 +537,7 @@ window.__ModuleLoader__.load({
         conflict: '两个动作不能用同一个键',
         failed: '保存失败',
       } : {
-        title: 'Follow-up suggestions',
+        title: 'Composer suggestions',
         hint: 'Click Change, then press the key you want. One key belongs to one action; Left and Right Alt count as different keys.',
         composer: 'Accept / generate / optimize',
         composerNote: 'Press once to accept, twice to generate or improve the draft',
