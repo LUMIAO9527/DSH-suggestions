@@ -100,6 +100,11 @@ window.__ModuleLoader__.load({
         h('text', { x: 15, y: 12.5, textAnchor: 'middle', fontSize: 9.5, fill: 'currentColor', fontFamily: 'inherit' }, 'Tab'));
     }
 
+    const DEFAULT_KEYS = { composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] };
+    const KEYS_EVENT = 'dsh-suggestions:keys';
+    const KEY_LABELS = { Tab: 'Tab', ArrowRight: '→', ArrowLeft: '←', ArrowUp: '↑', ArrowDown: '↓', AltLeft: '左 Alt', AltRight: '右 Alt', Escape: 'Esc', Enter: 'Enter', Space: 'Space', Backspace: 'Backspace' };
+    const keyLabel = code => KEY_LABELS[code] || String(code || '').replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad/, 'Num ');
+
     function SuggestionHint({ sessionId, useInput, useSession, inputActions }) {
       const input = useInput(state => state);
       const session = useSession(state => state);
@@ -134,6 +139,21 @@ window.__ModuleLoader__.load({
       const hintKey = hint ? `${hint.sessionId}#${hint.turn}` : '';
       const visible = Boolean(hint?.text) && hint.sessionId === sessionId && empty && idle && !runningTurn && !sending && dismissedKey !== hintKey;
       const shouldPoll = Boolean(sessionId) && empty && idle && !runningTurn && !sending && !generating;
+
+      const keysRef = useRef(DEFAULT_KEYS);
+
+      // The settings card writes through the host route; the composer reads the
+      // same keys, so a saved change applies without a reload.
+      useEffect(() => {
+        let cancelled = false;
+        fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config' }) })
+          .then(response => response.ok ? response.json() : null)
+          .then(payload => { if (!cancelled && payload?.ok && payload.value?.keys) keysRef.current = payload.value.keys; })
+          .catch(() => {});
+        const onKeys = event => { if (event?.detail) keysRef.current = event.detail; };
+        window.addEventListener(KEYS_EVENT, onKeys);
+        return () => { cancelled = true; window.removeEventListener(KEYS_EVENT, onKeys); };
+      }, []);
 
       const clearHint = useCallback(() => {
         shownRef.current = '';
@@ -439,15 +459,16 @@ window.__ModuleLoader__.load({
           // Alt on its own browses the candidates: Right Alt moves forward and asks
           // for a new one at the tail, Left Alt walks back. It stays native once
           // the composer holds a draft, and any other key cancels the gesture.
-          if (event.key === 'Alt' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
-            if (!current.empty || (!hintKey && candidateIndexRef.current < 0)) { altRef.current = null; return; }
+          const browse = event.code === keysRef.current.next[0] ? 1 : event.code === keysRef.current.prev[0] ? -1 : 0;
+          if (browse) {
+            const plain = event.code.startsWith('Alt') ? (!event.shiftKey && !event.ctrlKey && !event.metaKey) : (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey);
+            if (!plain || !current.empty || (!hintKey && candidateIndexRef.current < 0)) { altRef.current = null; return; }
             const at = Date.now();
-            const code = event.code === 'AltRight' ? 'AltRight' : 'AltLeft';
             const previousAlt = altRef.current;
-            const doubledAlt = previousAlt?.code === code && at - previousAlt.at <= 500;
-            altRef.current = doubledAlt ? null : { code, at };
+            const doubledAlt = previousAlt?.code === event.code && at - previousAlt.at <= 500;
+            altRef.current = doubledAlt ? null : { code: event.code, at };
             event.preventDefault();
-            if (doubledAlt) step(code === 'AltRight' ? 1 : -1);
+            if (doubledAlt) step(browse);
             return;
           }
           if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) { keyRef.current = {}; altRef.current = null; return; }
@@ -460,24 +481,25 @@ window.__ModuleLoader__.load({
             return;
           }
           const now = Date.now();
-          const shortcut = event.key === 'Tab' || event.key === 'ArrowRight';
+          const composerKeys = keysRef.current.composer;
+          const shortcut = composerKeys.includes(event.code);
           const previous = keyRef.current;
           const mode = current.empty ? 'empty' : 'draft';
-          const doubled = previous.key === event.key && previous.mode === mode && previous.draft === current.draft && now - previous.at <= 500;
+          const doubled = previous.key === event.code && previous.mode === mode && previous.draft === current.draft && now - previous.at <= 500;
           // A second press in the same acceptance gesture must not optimize
           // the suggestion that the first press has just inserted.
           if (shortcut && previous.mode === 'accepted' && previous.draft === current.draft && now - previous.at <= 500) { event.preventDefault(); event.stopPropagation(); return; }
           if (current.empty) {
             if (visible && shortcut && !doubled) { event.preventDefault(); event.stopPropagation(); accept(); return; }
             if (!shortcut) { keyRef.current = {}; return; }
-          } else if (event.key !== 'Tab' && !(event.key === 'ArrowRight' && caretAtEnd(editor))) {
+          } else if (!shortcut || (event.code === 'ArrowRight' && !caretAtEnd(editor))) {
             keyRef.current = {};
             return;
           }
           // Keep focus in the editor for the second Tab; a lone Right remains
           // native caret movement when no suggestion is being accepted.
-          if (event.key === 'Tab' || doubled) { event.preventDefault(); event.stopPropagation(); }
-          keyRef.current = doubled ? {} : { key: event.key, mode, draft: current.draft, at: now };
+          if (doubled || (shortcut && event.code !== 'ArrowRight')) { event.preventDefault(); event.stopPropagation(); }
+          keyRef.current = doubled ? {} : { key: event.code, mode, draft: current.draft, at: now };
           if (doubled) { if (current.empty) generate(); else optimize(); }
         };
         const resetKeys = () => { keyRef.current = {}; altRef.current = null; };
@@ -490,9 +512,112 @@ window.__ModuleLoader__.load({
       return h('div', { ref: anchorRef, 'data-dsh-suggestions': visible && layout ? 'hint' : 'anchor', style: visible ? { position: 'absolute', top: 0, left: 0, right: 0, height: 1, padding: 0, border: 0, pointerEvents: 'none', zIndex: 3 } : { display: 'none' } },
         visible && layout ? h('div', { 'aria-hidden': true, 'data-dsh-suggestions-text': '', style: { ...layout, position: 'absolute', display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none', background: 'transparent', whiteSpace: 'nowrap', overflow: 'hidden' } },
           h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, hint.text),
-          showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: '按 Tab 或 → 采用这条建议；双击 ↑ / ↓ 翻看', onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycapSvg()) : null) : null);
+          showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: '按 Tab 或 → 采用这条建议；双击左 / 右 Alt 翻看', onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycapSvg()) : null) : null);
     }
 
-    return { inject: ['slots'], apply(ctx) { ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register({ name: 'conversation.input.overlay', id: 'dsh-suggestions', order: 30 }, SuggestionHint)); } };
+    const CARD_BUTTON = { border: '1px solid currentColor', borderRadius: 6, background: 'transparent', color: 'inherit', padding: '2px 10px', fontSize: 12, cursor: 'pointer', opacity: 0.85 };
+
+    // Shown inside Settings (and the Plugins page when the host serves the
+    // bundle form). The card only talks to the host route, so the composer and
+    // the form can never disagree about what is saved.
+    function SettingsCard() {
+      const zh = typeof navigator !== 'undefined' && /^zh/i.test(navigator.language || '');
+      const TEXT = zh ? {
+        title: '后续提示词建议',
+        hint: '点“修改”后按下要用的键。一个键只给一个动作，左、右 Alt 是分开的。',
+        composer: '采纳 / 生成 / 优化',
+        composerNote: '单击采纳，双击生成或优化草稿',
+        next: '翻到下一条',
+        prev: '翻回上一条',
+        press: '按下按键…',
+        change: '修改',
+        save: '保存',
+        reset: '恢复默认',
+        saved: '已保存，立即生效',
+        conflict: '两个动作不能用同一个键',
+        failed: '保存失败',
+      } : {
+        title: 'Follow-up suggestions',
+        hint: 'Click Change, then press the key you want. One key belongs to one action; Left and Right Alt count as different keys.',
+        composer: 'Accept / generate / optimize',
+        composerNote: 'Press once to accept, twice to generate or improve the draft',
+        next: 'Browse forward',
+        prev: 'Browse back',
+        press: 'Press a key…',
+        change: 'Change',
+        save: 'Save',
+        reset: 'Reset',
+        saved: 'Saved and applied',
+        conflict: 'Two actions cannot share a key',
+        failed: 'Save failed',
+      };
+      const ROWS = [['composer', TEXT.composer, TEXT.composerNote], ['next', TEXT.next, ''], ['prev', TEXT.prev, '']];
+      const [draft, setDraft] = useState(null);
+      const [recording, setRecording] = useState('');
+      const [status, setStatus] = useState('');
+      const [busy, setBusy] = useState(false);
+
+      useEffect(() => {
+        let cancelled = false;
+        fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config' }) })
+          .then(response => response.ok ? response.json() : null)
+          .then(payload => { if (!cancelled && payload?.ok && payload.value?.keys) setDraft(payload.value.keys); })
+          .catch(() => {});
+        return () => { cancelled = true; };
+      }, []);
+
+      useEffect(() => {
+        if (!recording) return undefined;
+        const onKey = event => {
+          event.preventDefault(); event.stopPropagation();
+          if (event.key === 'Escape') { setRecording(''); return; }
+          if (['Shift', 'Control', 'Meta', 'AltGraph', 'CapsLock', 'Fn'].includes(event.key)) return;
+          if (/^(Shift|Control|Meta)(Left|Right)$/.test(event.code || '')) return;
+          if (!event.code) return;
+          setDraft(current => ({ ...(current || DEFAULT_KEYS), [recording]: [event.code] }));
+          setRecording('');
+          setStatus('');
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+      }, [recording]);
+
+      const conflicts = keys => keys.composer.includes(keys.next[0]) || keys.composer.includes(keys.prev[0]) || keys.next[0] === keys.prev[0];
+      const save = async next => {
+        if (conflicts(next)) { setStatus(TEXT.conflict); return; }
+        setBusy(true); setStatus('');
+        try {
+          const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config', keys: next }) });
+          const payload = await response.json();
+          if (!payload?.ok) throw new Error(payload?.error?.message || TEXT.failed);
+          setDraft(payload.value.keys);
+          window.dispatchEvent(new CustomEvent(KEYS_EVENT, { detail: payload.value.keys }));
+          setStatus(TEXT.saved);
+        } catch (error) { setStatus(String(error?.message || TEXT.failed)); }
+        finally { setBusy(false); }
+      };
+      const keys = draft || DEFAULT_KEYS;
+
+      return h('div', { style: { padding: '2px 0 6px', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 } },
+        h('div', { style: { fontWeight: 600 } }, TEXT.title),
+        h('div', { style: { opacity: 0.6, fontSize: 12 } }, TEXT.hint),
+        ROWS.map(([name, label, note]) => h('div', { key: name, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
+          h('div', { style: { minWidth: 0 } },
+            h('div', null, label),
+            note ? h('div', { style: { opacity: 0.5, fontSize: 11 } }, note) : null),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flex: 'none' } },
+            h('code', { style: { fontFamily: 'inherit', fontSize: 12, padding: '2px 8px', borderRadius: 4, border: '1px solid rgba(127,127,127,0.35)' } }, keys[name].map(keyLabel).join(' / ')),
+            h('button', { type: 'button', onClick: () => { setRecording(recording === name ? '' : name); setStatus(''); }, style: CARD_BUTTON }, recording === name ? TEXT.press : TEXT.change)))),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 } },
+          h('button', { type: 'button', disabled: busy, onClick: () => save(keys), style: CARD_BUTTON }, TEXT.save),
+          h('button', { type: 'button', disabled: busy, onClick: () => save(DEFAULT_KEYS), style: CARD_BUTTON }, TEXT.reset),
+          status ? h('span', { style: { opacity: 0.65, fontSize: 12 } }, status) : null));
+    }
+
+    return { inject: ['slots'], apply(ctx) {
+      ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register({ name: 'conversation.input.overlay', id: 'dsh-suggestions', order: 30 }, SuggestionHint));
+      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({ name: 'settings.plugin.item', id: 'dsh-suggestions', key: 'dsh-suggestions', order: 40 }, SettingsCard));
+      ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-suggestions' }, SettingsCard));
+    } };
   },
 });

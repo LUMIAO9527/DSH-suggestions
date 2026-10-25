@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join, sep } from 'node:path';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
-import { apply, summarize } from './index.js';
+import { apply, summarize, normalizeKeys } from './index.js';
 import { LIMITS, contextExcerpt, validateTurns, suggestionInput, parseSuggestion, parseRewrite, optimizeMaxTokens } from './prompt-core.mjs';
 
 const scratch = resolve(dirname(fileURLToPath(import.meta.url)), './_wip/tests');
@@ -329,3 +329,11 @@ try {
   if (!target.startsWith(scratch + sep)) throw new Error('cleanup escaped test workspace');
   rmSync(target, { recursive: true, force: true });
 }
+
+await test('key configuration normalizes to defaults and rejects collisions', () => {
+  assert.deepEqual(normalizeKeys({}), { composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] });
+  assert.deepEqual(normalizeKeys({ composer: ['F2'], next: ['F3'], prev: ['F4'] }), { composer: ['F2'], next: ['F3'], prev: ['F4'] });
+  assert.deepEqual(normalizeKeys({ composer: ['F2'], next: ['F2'], prev: ['F4'] }), { composer: ['F2'], next: ['AltRight'], prev: ['F4'] });
+  assert.deepEqual(normalizeKeys({ composer: ['F2', 'F2', 'bad code!'], next: 'F3', prev: '' }), { composer: ['F2'], next: ['F3'], prev: ['AltLeft'] });
+  assert.deepEqual(normalizeKeys({ next: ['F3'], prev: ['F3'] }), { composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] });
+});

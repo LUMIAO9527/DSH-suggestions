@@ -7,13 +7,13 @@
 **Desktop**：在插件管理中从 GitHub 安装，填写：
 
 ```text
-github:LUMIAO9527/DSH-suggestions#v0.4.1
+github:LUMIAO9527/DSH-suggestions#v0.5.0
 ```
 
 **Web / CLI**：
 
 ```sh
-dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.4.1
+dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.5.0
 ```
 
 ## 使用
@@ -29,6 +29,12 @@ dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.4.1
 | MCP 工具 | 供其他客户端调用建议生成与草稿优化 | 见 [MCP 说明](mcp/README.md) |
 
 没有聊天记录的新会话不生成建议。双击间隔不超过 500 毫秒；草稿上限 16000 字符。一次会话内最多保留 10 条建议供翻看，采纳、发送消息或切换会话后清空。
+
+## 按键设置
+
+在 DSH 设置的插件页打开 DSH-suggestions 卡片，可以改三组按键：采纳 / 生成 / 优化共用的键、翻到下一条、翻回上一条。点“修改”后直接按下要用的键，保存后立即生效，不用刷新页面；左 `Alt` 和右 `Alt` 算两个不同的键。
+
+按键按 `KeyboardEvent.code` 记录，切换输入法或键盘布局不会失效。同一个键不能给两个动作，冲突时会提示并且不保存；`非法键`或读不到配置时回退到默认值。设置存在 `~/.dsh/dsh-suggestions-config.json`。
 
 ## 超时设置
 

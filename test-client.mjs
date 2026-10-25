@@ -10,6 +10,7 @@ function mount(initial = {}) {
     anchorBox: { left: 100, top: 200, width: 600, height: 1 }, nativeBox: { left: 114, top: 212, width: 578, height: 24 },
     nativeStyle: { display: 'block', fontFamily: 'Arial', fontSize: '14px', lineHeight: '24px', fontWeight: '400', color: 'rgb(128, 128, 128)', opacity: '1' }, pseudoStyle: { content: 'none' }, ...initial };
   const hooks = [];
+  const components = {};
   const timers = new Map();
   const frames = new Map();
   const requests = [];
@@ -50,11 +51,15 @@ function mount(initial = {}) {
   const document = Object.assign(new DOMEventTarget(), { body: {}, activeElement: editor, visibilityState: 'visible' });
   const window = Object.assign(new DOMEventTarget(), { requestAnimationFrame(fn) { const id = ++timerId; frames.set(id, fn); return id; }, cancelAnimationFrame(id) { frames.delete(id); }, getComputedStyle(node, pseudo) { return node === anchor ? { width: '600px', height: '1px' } : pseudo ? { ...state.nativeStyle, ...state.pseudoStyle } : state.nativeStyle; }, getSelection: () => ({ rangeCount: 1, isCollapsed: true, anchorNode: textNode, anchorOffset: atEnd ? state.input.draft.length : 0, getRangeAt: () => ({ cloneRange: () => ({ selectNodeContents() {}, setEnd() {}, toString: () => atEnd ? state.input.draft : '' }) }) }), __ModuleLoader__: { load(definition) {
     const plugin = definition.factory(() => React);
-    plugin.apply({ slots: { inject(_name, fn) { fn(); }, register(_options, Component) { component = Component; return () => {}; } } });
+    plugin.apply({ slots: { inject(_name, fn) { fn(); }, register(options, Component) { components[options?.name] = Component; if (options?.name === 'conversation.input.overlay') component = Component; return () => {}; } } });
   } } });
   const storage = () => { const values = new Map(); return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }; };
   const context = vm.createContext({ window, document, Date: class extends Date { static now() { return now; } }, localStorage: storage(), sessionStorage: storage(), AbortController, setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; }, clearTimeout(id) { timers.delete(id); }, fetch: async (_url, init) => {
     const body = JSON.parse(init.body);
+    if (body.action === 'config') {
+      const keys = state.configKeys || { composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] };
+      return { ok: true, json: async () => ({ ok: true, value: { keys } }) };
+    }
     const request = { body, signal: init.signal };
     requests.push(request);
     if (body.action === 'optimize' || body.manual || state.hold) return new Promise(resolve => { request.respond = payload => resolve({ ok: true, json: async () => payload }); });
@@ -76,12 +81,12 @@ function mount(initial = {}) {
   async function frame() { const pending = [...frames.values()]; frames.clear(); pending.forEach(fn => fn()); await flush(); }
   async function key(key, flags = {}) {
     const event = new Event('keydown', { cancelable: true });
-    Object.assign(event, { key, isComposing: false, keyCode: 0, repeat: false, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...flags });
+    Object.assign(event, { key, code: key, isComposing: false, keyCode: 0, repeat: false, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...flags });
     window.dispatchEvent(event); await flush(); return event;
   }
   function close() { for (const hook of hooks) hook?.cleanup?.(); timers.clear(); frames.clear(); }
   render();
-  return { state, requests, changes, flush, update, tick, frame, key, visible, close, text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
+  return { state, requests, changes, flush, update, tick, frame, key, visible, close, card: () => components['settings.plugin.item'], text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
 }
 
 await test('hint follows native placeholder movement, width and skin typography while visible', async () => {
@@ -429,5 +434,26 @@ await test('a sent message does not resurrect the adopted suggestion', async () 
     await h.update({ session: { running: false, pendingSubmissions: [{ requestId: 'sent' }] } });
     await h.update({ input: { ...h.state.input, draft: '' }, session: { running: true, pendingSubmissions: [] } });
     assert.equal(h.visible(), false);
+  } finally { h.close(); }
+});
+
+await test('a saved key configuration drives the composer gestures', async () => {
+  const h = mount({ configKeys: { composer: ['Tab'], next: ['F2'], prev: ['F3'] } });
+  try {
+    await h.flush();
+    assert.equal(h.visible(), true);
+    const count = h.requests.length;
+    await h.key('F2', { code: 'F2' }); h.advance(200); await h.key('F2', { code: 'F2' });
+    assert.equal(h.requests.length, count + 1);
+    h.requests.at(-1).respond({ ok: true, value: { status: 'ready', turn: 2, suggestions: ['自定义键建议'] } });
+    await h.flush(); assert.equal(h.text(), '自定义键建议');
+    await h.key('F3', { code: 'F3' }); h.advance(200); await h.key('F3', { code: 'F3' });
+    assert.equal(h.text(), h.state.suggestion);
+    const stable = h.requests.length;
+    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
+    assert.equal(h.requests.length, stable); // Alt is no longer a browsing key.
+    await h.key('Tab', { code: 'Tab' });
+    assert.equal(h.changes.at(-1), h.state.suggestion);
+    assert.equal(typeof h.card(), 'function'); // The settings card is registered beside the overlay.
   } finally { h.close(); }
 });

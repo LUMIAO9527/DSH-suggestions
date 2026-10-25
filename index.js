@@ -13,6 +13,48 @@ const BRIDGE_DIR = join(homedir(), '.dsh', 'dsh-suggestions-mcp');
 const BRIDGE_FILE = join(BRIDGE_DIR, 'bridge.json');
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_ENTRIES = 64;
+const CONFIG_PATH = join(homedir(), '.dsh', 'dsh-suggestions-config.json');
+const DEFAULT_KEYS = Object.freeze({ composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] });
+const KEY_CODE = /^[A-Za-z0-9]{1,24}$/;
+
+// Keys travel as KeyboardEvent.code so a layout or IME change never breaks
+// them. Anything unparsable falls back to the shipped default instead of
+// leaving the composer without a working gesture.
+export function normalizeKeys(input = {}) {
+  const out = {};
+  for (const name of ['composer', 'next', 'prev']) {
+    const raw = typeof input?.[name] === 'string' ? [input[name]] : Array.isArray(input?.[name]) ? input[name] : [];
+    const codes = [];
+    for (const value of raw) {
+      if (typeof value !== 'string') continue;
+      const code = value.trim();
+      if (!KEY_CODE.test(code) || codes.includes(code)) continue;
+      codes.push(code);
+      if (codes.length >= (name === 'composer' ? 3 : 1)) break;
+    }
+    out[name] = codes.length ? codes : [...DEFAULT_KEYS[name]];
+  }
+  if (out.next[0] === out.prev[0]) { out.next = [...DEFAULT_KEYS.next]; out.prev = [...DEFAULT_KEYS.prev]; }
+  for (const name of ['next', 'prev']) {
+    if (!out.composer.includes(out[name][0])) continue;
+    const other = name === 'next' ? 'prev' : 'next';
+    const alternatives = name === 'next' ? ['AltRight', 'AltLeft'] : ['AltLeft', 'AltRight'];
+    out[name] = [alternatives.find(code => !out.composer.includes(code) && code !== out[other][0]) || DEFAULT_KEYS[name][0]];
+  }
+  return out;
+}
+
+function readKeys() {
+  try { return normalizeKeys(JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))); }
+  catch { return normalizeKeys(DEFAULT_KEYS); }
+}
+
+function writeKeys(input) {
+  const keys = normalizeKeys(input);
+  mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+  writeFileSync(CONFIG_PATH, `${JSON.stringify(keys, null, 2)}\n`, { mode: 0o600 });
+  return keys;
+}
 const noStore = (body, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
 
 function textOf(message) {
@@ -326,6 +368,12 @@ export function apply(ctx, config = {}, runtime = {}) {
     scope.effect(() => connection.fetch.register({ path: ROUTE_PATH, methods: ['POST'], requestBody: 'buffered', fetch: async request => {
       let body;
       try { body = await request.json(); } catch { return noStore({ ok: false, error: { message: 'body is not JSON' } }, 400); }
+      if (body?.action === 'config') {
+        try {
+          if (body.keys === undefined) return noStore({ ok: true, value: { keys: readKeys(), defaults: normalizeKeys(DEFAULT_KEYS) } });
+          return noStore({ ok: true, value: { keys: writeKeys(body.keys), defaults: normalizeKeys(DEFAULT_KEYS) } });
+        } catch (error) { return noStore({ ok: false, error: { message: error.message } }, 400); }
+      }
       let sessionId;
       try { sessionId = boundedText(body?.sessionId, 'sessionId', 240, true); } catch (error) { return noStore({ ok: false, error: { message: error.message } }, 400); }
       if (body.action === 'optimize') {

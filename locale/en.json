@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "DSH-suggestions",
-    "description": "Double Tab / Right in an empty composer to request a suggestion, press once to accept it, and double Up / Down to browse suggestions. With a draft, double Tab or double Right at the end to improve it."
+    "description": "Double Tab / Right in an empty composer to request a suggestion, press once to accept it, and double Alt to browse suggestions. With a draft, double Tab or double Right at the end to improve it. Every key can be changed in the plugin settings."
   },
   "suggestion.label": "Suggested follow-up"
 }
