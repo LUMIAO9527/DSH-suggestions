@@ -139,6 +139,10 @@ window.__ModuleLoader__.load({
       const hintKey = hint ? `${hint.sessionId}#${hint.turn}` : '';
       const visible = Boolean(hint?.text) && hint.sessionId === sessionId && empty && idle && !runningTurn && !sending && dismissedKey !== hintKey;
       const shouldPoll = Boolean(sessionId) && empty && idle && !runningTurn && !sending && !generating;
+      // A manual request clears the hint, so the composer would otherwise look
+      // idle for up to 40 seconds. The placeholder doubles as a status line.
+      const generatingLabel = (typeof navigator !== 'undefined' && /^zh/i.test(navigator.language || '')) ? '正在生成建议…' : 'Generating a suggestion…';
+      const showing = visible || (generating && empty && idle && !runningTurn && !sending);
 
       const keysRef = useRef(DEFAULT_KEYS);
 
@@ -305,7 +309,7 @@ window.__ModuleLoader__.load({
       // Measure the native placeholder itself: mobile layouts and composer skins
       // own its position, typography and available width, including transitions.
       useEffect(() => {
-        if (!visible) { setLayout(null); return undefined; }
+        if (!showing) { setLayout(null); return undefined; }
         let frame;
         let placeholder;
         let oldVisibility = '';
@@ -339,7 +343,7 @@ window.__ModuleLoader__.load({
           window.cancelAnimationFrame(frame);
           restore();
         };
-      }, [visible, sessionId]);
+      }, [showing, sessionId]);
 
       // Show a suggestion and make it the cursor of the candidate list. A text
       // already seen this session is revisited instead of duplicated, so Up can
@@ -509,10 +513,10 @@ window.__ModuleLoader__.load({
         return () => { window.removeEventListener('keydown', onKeyDown, true); window.removeEventListener('blur', resetKeys); window.removeEventListener('focusout', resetKeys, true); };
       }, [sessionId, visible, hintKey, accept, generate, optimize, step]);
 
-      return h('div', { ref: anchorRef, 'data-dsh-suggestions': visible && layout ? 'hint' : 'anchor', style: visible ? { position: 'absolute', top: 0, left: 0, right: 0, height: 1, padding: 0, border: 0, pointerEvents: 'none', zIndex: 3 } : { display: 'none' } },
-        visible && layout ? h('div', { 'aria-hidden': true, 'data-dsh-suggestions-text': '', style: { ...layout, position: 'absolute', display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none', background: 'transparent', whiteSpace: 'nowrap', overflow: 'hidden' } },
-          h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, hint.text),
-          showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: '按 Tab 或 → 采用这条建议；双击左 / 右 Alt 翻看', onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycapSvg()) : null) : null);
+      return h('div', { ref: anchorRef, 'data-dsh-suggestions': showing && layout ? (visible ? 'hint' : 'generating') : 'anchor', style: showing ? { position: 'absolute', top: 0, left: 0, right: 0, height: 1, padding: 0, border: 0, pointerEvents: 'none', zIndex: 3 } : { display: 'none' } },
+        showing && layout ? h('div', { 'aria-hidden': true, 'data-dsh-suggestions-text': '', style: { ...layout, position: 'absolute', display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none', background: 'transparent', whiteSpace: 'nowrap', overflow: 'hidden', opacity: visible ? layout.opacity : '0.5' } },
+          h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, visible ? hint.text : generatingLabel),
+          visible && showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: '按 Tab 或 → 采用这条建议；双击左 / 右 Alt 翻看', onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycapSvg()) : null) : null);
     }
 
     const CARD_BUTTON = { border: '1px solid currentColor', borderRadius: 6, background: 'transparent', color: 'inherit', padding: '2px 10px', fontSize: 12, cursor: 'pointer', opacity: 0.85 };

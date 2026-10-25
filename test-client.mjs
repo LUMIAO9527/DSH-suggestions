@@ -86,7 +86,7 @@ function mount(initial = {}) {
   }
   function close() { for (const hook of hooks) hook?.cleanup?.(); timers.clear(); frames.clear(); }
   render();
-  return { state, requests, changes, flush, update, tick, frame, key, visible, close, card: () => components['settings.plugin.item'], text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
+  return { state, requests, changes, flush, update, tick, frame, key, visible, generating: () => tree?.props['data-dsh-suggestions'] === 'generating', close, card: () => components['settings.plugin.item'], text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
 }
 
 await test('hint follows native placeholder movement, width and skin typography while visible', async () => {
@@ -455,5 +455,23 @@ await test('a saved key configuration drives the composer gestures', async () =>
     await h.key('Tab', { code: 'Tab' });
     assert.equal(h.changes.at(-1), h.state.suggestion);
     assert.equal(typeof h.card(), 'function'); // The settings card is registered beside the overlay.
+  } finally { h.close(); }
+});
+
+await test('a manual request shows a generating label until the suggestion arrives', async () => {
+  const h = mount({ suggestion: '', hold: true });
+  try {
+    await h.flush();
+    assert.equal(h.visible(), false);
+    await h.key('Tab'); await h.key('Tab');
+    assert.equal(h.generating(), true);
+    assert.equal(h.visible(), false);
+    assert.equal(h.text(), 'Generating a suggestion…');
+    const request = h.requests.at(-1);
+    request.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['生成好了'] } });
+    await h.flush();
+    assert.equal(h.generating(), false);
+    assert.equal(h.visible(), true);
+    assert.equal(h.text(), '生成好了');
   } finally { h.close(); }
 });
