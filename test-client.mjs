@@ -35,6 +35,7 @@ function mount(initial = {}) {
     useRef(initial) { const index = cursor++; if (!hooks[index]) hooks[index] = { current: initial }; return hooks[index]; },
     useCallback(fn, deps) { const index = cursor++; if (!same(hooks[index]?.deps, deps)) hooks[index] = { value: fn, deps }; return hooks[index].value; },
     useEffect(fn, deps) { const index = cursor++; if (!same(hooks[index]?.deps, deps)) effects.push(() => { hooks[index]?.cleanup?.(); hooks[index] = { deps, cleanup: fn() }; }); },
+    useLayoutEffect(fn, deps) { React.useEffect(fn, deps); },
   };
   const placeholder = { textContent: 'Message', getBoundingClientRect: () => state.nativeBox, style: { getPropertyValue: name => styleMap.get(name)?.value || '', getPropertyPriority: name => styleMap.get(name)?.priority || '', setProperty: (name, value, priority) => styleMap.set(name, { value, priority }), removeProperty: name => styleMap.delete(name) } };
   const editor = { isContentEditable: true, contains(node) { return node === editor || node === textNode; }, focus() { document.activeElement = editor; }, get textContent() { return state.input.draft; } };
@@ -51,19 +52,22 @@ function mount(initial = {}) {
   const document = Object.assign(new DOMEventTarget(), { body: {}, activeElement: editor, visibilityState: 'visible' });
   const window = Object.assign(new DOMEventTarget(), { requestAnimationFrame(fn) { const id = ++timerId; frames.set(id, fn); return id; }, cancelAnimationFrame(id) { frames.delete(id); }, getComputedStyle(node, pseudo) { return node === anchor ? { width: '600px', height: '1px' } : pseudo ? { ...state.nativeStyle, ...state.pseudoStyle } : state.nativeStyle; }, getSelection: () => ({ rangeCount: 1, isCollapsed: true, anchorNode: textNode, anchorOffset: atEnd ? state.input.draft.length : 0, getRangeAt: () => ({ cloneRange: () => ({ selectNodeContents() {}, setEnd() {}, toString: () => atEnd ? state.input.draft : '' }) }) }), __ModuleLoader__: { load(definition) {
     const plugin = definition.factory(() => React);
-    plugin.apply({ slots: { inject(_name, fn) { fn(); }, register(options, Component) { components[options?.name] = Component; if (options?.name === 'conversation.input.overlay') component = Component; return () => {}; } } });
+    // These are declared by the installed DSH. An unknown slot waits forever;
+    // the earlier adapter ran every callback and masked unusable settings slots.
+    const declared = new Set(['conversation.input.overlay', 'settings.section', 'settings.plugins.tab']);
+    plugin.apply({ locale: { getSnapshot: () => ({ active: state.language || 'en' }) }, slots: { inject(name, fn) { if (declared.has(name)) fn(); }, register(options, Component) { assert.ok(declared.has(options.name)); assert.ok(options.id); if (options.name.startsWith('settings.')) { assert.equal(typeof options.label, 'function'); assert.ok(options.label()); } components[options?.name] = { Component, options }; if (options?.name === 'conversation.input.overlay') component = Component; return () => {}; } } });
   } } });
   const storage = () => { const values = new Map(); return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }; };
   const context = vm.createContext({ window, document, Date: class extends Date { static now() { return now; } }, localStorage: storage(), sessionStorage: storage(), AbortController, setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; }, clearTimeout(id) { timers.delete(id); }, fetch: async (_url, init) => {
     const body = JSON.parse(init.body);
     if (body.action === 'config') {
-      const keys = state.configKeys || { composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] };
+      const keys = state.configKeys || { composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] };
       return { ok: true, json: async () => ({ ok: true, value: { keys } }) };
     }
     const request = { body, signal: init.signal };
     requests.push(request);
     if (body.action === 'optimize' || body.manual || state.hold) return new Promise(resolve => { request.respond = payload => resolve({ ok: true, json: async () => payload }); });
-    return { ok: true, json: async () => ({ ok: true, value: { status: 'ready', turn: state.turn, suggestions: [state.suggestion] } }) };
+    return { ok: true, json: async () => ({ ok: true, value: { status: 'ready', turn: state.turn, revision: state.revision || 0, suggestions: [state.suggestion] } }) };
   } });
   vm.runInContext(source, context);
   const actions = { setDraft(value) { changes.push(value); state.input = { ...state.input, draft: value }; dirty = true; } };
@@ -84,9 +88,14 @@ function mount(initial = {}) {
     Object.assign(event, { key, code: key, isComposing: false, keyCode: 0, repeat: false, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...flags });
     window.dispatchEvent(event); await flush(); return event;
   }
+  async function keyup(key, flags = {}) {
+    const event = new Event('keyup', { cancelable: true });
+    Object.assign(event, { key, code: key, ...flags }); window.dispatchEvent(event); await flush(); return event;
+  }
   function close() { for (const hook of hooks) hook?.cleanup?.(); timers.clear(); frames.clear(); }
   render();
-  return { state, requests, changes, flush, update, tick, frame, key, visible, generating: () => tree?.props['data-dsh-suggestions'] === 'generating', close, card: () => components['settings.plugin.item'], text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
+  function find(node, name) { if (!node || typeof node !== 'object') return; if (name in (node.props || {})) return node; for (const child of node.children || []) { const found = find(child, name); if (found) return found; } }
+  return { state, requests, changes, flush, update, tick, frame, key, keyup, visible, page: () => find(tree, 'data-dsh-suggestions-page')?.children[0], generating: () => tree?.props['data-dsh-suggestions'] === 'generating', status: () => tree?.props['data-dsh-suggestions'] === 'status', close, card: () => components['settings.section']?.Component, registration: name => components[name], text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
 }
 
 await test('hint follows native placeholder movement, width and skin typography while visible', async () => {
@@ -215,15 +224,15 @@ await test('manual generation restores an escaped hint, and clearing the adopted
     await h.key('Tab'); await h.key('Tab');
     const first = h.requests.at(-1);
     assert.equal(first.body.manual, true);
-    first.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: [h.state.suggestion] } });
+    first.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['再说明第二部分的判断依据'] } });
     await h.flush(); assert.equal(h.visible(), true);
     await h.key('Tab');
     const count = h.requests.length;
     await h.update({ input: { ...h.state.input, draft: '' } });
     assert.equal(h.visible(), true);
-    assert.equal(h.text(), h.state.suggestion);
+    assert.equal(h.text(), '再说明第二部分的判断依据');
     assert.equal(h.requests.length, count); // No request: the candidate is restored.
-    await h.key('Tab'); assert.equal(h.changes.at(-1), h.state.suggestion);
+    await h.key('Tab'); assert.equal(h.changes.at(-1), '再说明第二部分的判断依据');
   } finally { h.close(); }
 });
 
@@ -335,7 +344,7 @@ await test('double-right requires both presses at the end, and one request stays
   } finally { h.close(); }
 });
 
-await test('double Right Alt walks forward through offered suggestions and regenerates at the tail', async () => {
+await test('Alt Down and Up browse one scoped candidate deck and generate only at its tail', async () => {
   const h = mount();
   try {
     await h.flush();
@@ -344,33 +353,31 @@ await test('double Right Alt walks forward through offered suggestions and regen
     assert.equal(h.text(), first);
 
     const count = h.requests.length;
-    await h.key('Alt', { code: 'AltRight' }); assert.equal(h.requests.length, count); // One press only arms the gesture.
-    h.advance(200);
-    await h.key('Alt', { code: 'AltRight' });
+    await h.key('ArrowDown', { altKey: true });
     const second = h.requests.at(-1);
     assert.equal(second.body.action, 'suggest'); assert.equal(second.body.manual, true);
     assert.equal(second.body.sessionId, 'own');
-    second.respond({ ok: true, value: { status: 'ready', turn: 2, suggestions: ['第二条建议'] } });
+    second.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['第二条建议'] } });
     await h.flush();
     assert.equal(h.text(), '第二条建议'); assert.equal(h.visible(), true);
     assert.equal(h.state.input.draft, ''); // Browsing never writes into the composer.
 
-    await h.key('Alt', { code: 'AltLeft' }); h.advance(200); await h.key('Alt', { code: 'AltLeft' });
+    await h.key('ArrowUp', { altKey: true });
     assert.equal(h.text(), first);
 
     const stable = h.requests.length;
-    await h.key('Alt', { code: 'AltLeft' }); h.advance(200); await h.key('Alt', { code: 'AltLeft' });
+    await h.key('ArrowUp', { altKey: true });
     assert.equal(h.requests.length, stable); assert.equal(h.text(), first);
 
-    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
+    await h.key('ArrowDown', { altKey: true });
     assert.equal(h.text(), '第二条建议');
 
     // A dismissed hint can still be browsed, and the tail asks for a new one.
     await h.key('Escape'); assert.equal(h.visible(), false);
-    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
+    await h.key('ArrowDown', { altKey: true });
     const third = h.requests.at(-1);
     assert.equal(third.body.manual, true);
-    third.respond({ ok: true, value: { status: 'ready', turn: 3, suggestions: ['第三条建议'] } });
+    third.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['第三条建议'] } });
     await h.flush();
     assert.equal(h.visible(), true); assert.equal(h.text(), '第三条建议');
   } finally { h.close(); }
@@ -402,8 +409,8 @@ await test('repeat keys, IME composition, combination keys and a draft never ste
     assert.equal(h.requests.length, count);
     h.advance(600);
     await h.update({ input: { ...h.state.input, draft: '整理报告' } });
-    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
-    await h.key('Alt', { code: 'AltLeft' }); h.advance(200); await h.key('Alt', { code: 'AltLeft' });
+    await h.key('ArrowDown', { altKey: true });
+    await h.key('ArrowUp', { altKey: true });
     assert.equal(h.requests.length, count);
     assert.equal(h.changes.length, 0);
   } finally { h.close(); }
@@ -421,7 +428,7 @@ await test('deleting an adopted suggestion shows it again without another model 
     assert.equal(h.visible(), true);
     assert.equal(h.text(), first);
     assert.equal(h.requests.length, count); // Restored from the candidate list, not the model.
-    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
+    await h.key('ArrowDown', { altKey: true });
     assert.equal(h.requests.length, count + 1); // Still browsable from the restored candidate.
   } finally { h.close(); }
 });
@@ -445,12 +452,12 @@ await test('a saved key configuration drives the composer gestures', async () =>
     const count = h.requests.length;
     await h.key('F2', { code: 'F2' }); h.advance(200); await h.key('F2', { code: 'F2' });
     assert.equal(h.requests.length, count + 1);
-    h.requests.at(-1).respond({ ok: true, value: { status: 'ready', turn: 2, suggestions: ['自定义键建议'] } });
+    h.requests.at(-1).respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['自定义键建议'] } });
     await h.flush(); assert.equal(h.text(), '自定义键建议');
     await h.key('F3', { code: 'F3' }); h.advance(200); await h.key('F3', { code: 'F3' });
     assert.equal(h.text(), h.state.suggestion);
     const stable = h.requests.length;
-    await h.key('Alt', { code: 'AltRight' }); h.advance(200); await h.key('Alt', { code: 'AltRight' });
+    await h.key('ArrowDown', { altKey: true });
     assert.equal(h.requests.length, stable); // Alt is no longer a browsing key.
     await h.key('Tab', { code: 'Tab' });
     assert.equal(h.changes.at(-1), h.state.suggestion);
@@ -473,5 +480,137 @@ await test('a manual request shows a generating label until the suggestion arriv
     assert.equal(h.generating(), false);
     assert.equal(h.visible(), true);
     assert.equal(h.text(), '生成好了');
+  } finally { h.close(); }
+});
+
+await test('settings contributions use declared host slots, identifiers and localized labels', async () => {
+  const h = mount({ language: 'zh' });
+  try {
+    for (const name of ['settings.section', 'settings.plugins.tab']) {
+      const entry = h.registration(name);
+      assert.equal(typeof entry?.Component, 'function');
+      assert.equal(entry.options.id, 'dsh-suggestions');
+      assert.equal(entry.options.label(), '输入框建议');
+      assert.equal(entry.options.inject().language, 'zh');
+    }
+  } finally { h.close(); }
+});
+
+await test('legacy bare Alt bindings remain usable when explicitly configured', async () => {
+  const h = mount({ suggestion: '', configKeys: { composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] } });
+  try {
+    await h.flush(); const count = h.requests.length;
+    for (let i = 0; i < 2; i++) {
+      assert.equal((await h.key('Alt', { code: 'AltRight', altKey: true, location: 2 })).defaultPrevented, true);
+      assert.equal((await h.keyup('Alt', { code: 'AltRight', location: 2 })).defaultPrevented, true);
+      h.advance(100);
+    }
+    assert.equal(h.requests.length, count + 1);
+    assert.equal(h.requests.at(-1).body.manual, true);
+    assert.equal(h.generating(), true);
+  } finally { h.close(); }
+});
+
+await test('remote key events without a code retain Tab and left/right Alt gestures', async () => {
+  for (const scenario of ['tab', 'alt']) {
+    const h = mount({ suggestion: '' });
+    try {
+      await h.flush();
+      if (scenario === 'tab') { await h.key('Tab', { code: '' }); await h.key('Tab', { code: 'Unidentified' }); }
+      else { await h.key('ArrowDown', { code: '', altKey: true }); }
+      assert.equal(h.requests.at(-1).body.manual, true);
+      assert.equal(h.generating(), true);
+    } finally { h.close(); }
+  }
+});
+
+await test('manual abstention and errors remain visible long enough to read and preserve native placement', async () => {
+  for (const result of [{ status: 'none', turn: 1, suggestions: [] }, { status: 'none', turn: 0, reason: 'no-history', suggestions: [] }, { status: 'error', turn: 1 }]) {
+    const h = mount({ suggestion: '' });
+    try {
+      await h.flush(); await h.key('Tab'); await h.key('Tab');
+      h.requests.at(-1).respond({ ok: true, value: result });
+      await h.flush();
+      assert.equal(h.status(), true); assert.equal(h.visible(), false);
+      assert.equal(h.placeholderVisible(), false); assert.equal(h.layout().left, 14);
+      assert.match(h.text(), result.status === 'error' ? /Could not/ : result.turn === 0 ? /Start a conversation/ : /No suitable/);
+      await h.key('Escape'); assert.equal(h.status(), false); assert.equal(h.placeholderVisible(), true);
+    } finally { h.close(); }
+  }
+});
+
+await test('a consumed-turn poll does not erase an adopted candidate restored after clearing', async () => {
+  const h = mount();
+  try {
+    await h.flush(); await h.key('Tab');
+    await h.update({ input: { ...h.state.input, draft: '' }, hold: true });
+    assert.equal(h.visible(), true);
+    await h.tick();
+    assert.equal(h.requests.at(-1).body.afterTurn, 1);
+    h.requests.at(-1).respond({ ok: true, value: { status: 'none', turn: 1, suggestions: [] } });
+    await h.flush(); assert.equal(h.visible(), true); assert.equal(h.text(), h.state.suggestion);
+  } finally { h.close(); }
+});
+
+await test('candidate paging sends exclusions, bounds its deck and deduplicates equivalent text', async () => {
+  const h = mount();
+  try {
+    await h.flush(); assert.equal(h.page(), '1/1');
+    for (let i = 2; i <= 12; i++) {
+      await h.key('ArrowDown', { altKey: true });
+      const request = h.requests.at(-1);
+      assert.equal(request.body.manual, true); assert.equal(request.body.candidateTurn, 1);
+      assert.ok(request.body.previousSuggestions.length <= 10);
+      request.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: [`请解释第 ${i} 项的具体依据`] } });
+      await h.flush(); assert.equal(h.page(), `${Math.min(i, 10)}/${Math.min(i, 10)}`);
+    }
+    await h.key('ArrowDown', { altKey: true });
+    h.requests.at(-1).respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['请解释第 12 项的具体依据。'] } });
+    await h.flush(); assert.equal(h.status(), true); assert.equal(h.page(), '10/10');
+    const count = h.requests.filter(request => request.body.manual).length;
+    for (let i = 0; i < 12; i++) await h.key('ArrowUp', { altKey: true });
+    assert.equal(h.page(), '1/10'); assert.equal(h.text(), '请解释第 3 项的具体依据');
+    assert.equal(h.requests.filter(request => request.body.manual).length, count);
+  } finally { h.close(); }
+});
+
+await test('new answers and same-turn revisions replace the candidate scope', async () => {
+  for (const change of [{ turn: 2, revision: 10 }, { turn: 1, revision: 11 }]) {
+    const h = mount({ revision: 5 });
+    try {
+      await h.flush();
+      await h.key('ArrowDown', { altKey: true });
+      h.requests.at(-1).respond({ ok: true, value: { status: 'ready', turn: 1, revision: 5, suggestions: ['第二个候选请求'] } });
+      await h.flush(); assert.equal(h.page(), '2/2');
+      Object.assign(h.state, change, { suggestion: '针对新回答的下一条建议' });
+      await h.tick(); assert.equal(h.page(), '1/1');
+      assert.equal(h.text(), '针对新回答的下一条建议');
+      await h.key('ArrowUp', { altKey: true }); assert.equal(h.text(), '针对新回答的下一条建议');
+    } finally { h.close(); }
+  }
+});
+
+await test('browsing back cancels a pending new candidate and rejects its late result', async () => {
+  const h = mount();
+  try {
+    await h.flush(); await h.key('ArrowDown', { altKey: true });
+    h.requests.at(-1).respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['第二个候选请求'] } });
+    await h.flush(); await h.key('ArrowDown', { altKey: true });
+    const pending = h.requests.at(-1); assert.equal(h.generating(), true);
+    await h.key('ArrowUp', { altKey: true }); assert.equal(pending.signal.aborted, true);
+    pending.respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['迟到的新候选请求'] } });
+    await h.flush(); assert.equal(h.text(), h.state.suggestion); assert.equal(h.page(), '1/2');
+  } finally { h.close(); }
+});
+
+await test('a remote running response retires the old deck before feedback can restore it', async () => {
+  const h = mount();
+  try {
+    await h.flush(); await h.key('ArrowDown', { altKey: true });
+    h.requests.at(-1).respond({ ok: true, value: { status: 'running', turn: 1, suggestions: [] } });
+    await h.flush(); assert.equal(h.visible(), false); assert.equal(h.page(), undefined);
+    h.state.suggestion = '';
+    await h.tick(); assert.equal(h.visible(), false);
+    await h.key('ArrowUp', { altKey: true }); assert.equal(h.visible(), false);
   } finally { h.close(); }
 });

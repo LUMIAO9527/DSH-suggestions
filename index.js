@@ -14,8 +14,14 @@ const BRIDGE_FILE = join(BRIDGE_DIR, 'bridge.json');
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_ENTRIES = 64;
 const CONFIG_PATH = join(homedir(), '.dsh', 'dsh-suggestions-config.json');
-const DEFAULT_KEYS = Object.freeze({ composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] });
-const KEY_CODE = /^[A-Za-z0-9]{1,24}$/;
+const DEFAULT_KEYS = Object.freeze({ composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] });
+const KEY_CODE = /^(?:Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Numpad(?:[0-9]|Add|Subtract|Multiply|Divide|Decimal|Enter|Equal|Comma)|Arrow(?:Right|Left|Up|Down)|Alt(?:Left|Right)|Tab|Enter|Escape|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)$/;
+function normalizeBinding(value) {
+  if (typeof value !== 'string') return '';
+  const parts = value.trim().split('+'), code = parts.pop();
+  if (!KEY_CODE.test(code || '') || parts.some(part => !['Control', 'Alt', 'Shift', 'Meta'].includes(part)) || new Set(parts).size !== parts.length) return '';
+  return [...['Control', 'Alt', 'Shift', 'Meta'].filter(modifier => parts.includes(modifier)), code].join('+');
+}
 
 // Keys travel as KeyboardEvent.code so a layout or IME change never breaks
 // them. Anything unparsable falls back to the shipped default instead of
@@ -27,8 +33,8 @@ export function normalizeKeys(input = {}) {
     const codes = [];
     for (const value of raw) {
       if (typeof value !== 'string') continue;
-      const code = value.trim();
-      if (!KEY_CODE.test(code) || codes.includes(code)) continue;
+      const code = normalizeBinding(value);
+      if (!code || codes.includes(code)) continue;
       codes.push(code);
       if (codes.length >= (name === 'composer' ? 3 : 1)) break;
     }
@@ -38,21 +44,23 @@ export function normalizeKeys(input = {}) {
   for (const name of ['next', 'prev']) {
     if (!out.composer.includes(out[name][0])) continue;
     const other = name === 'next' ? 'prev' : 'next';
-    const alternatives = name === 'next' ? ['AltRight', 'AltLeft'] : ['AltLeft', 'AltRight'];
-    out[name] = [alternatives.find(code => !out.composer.includes(code) && code !== out[other][0]) || DEFAULT_KEYS[name][0]];
+    const alternatives = name === 'next' ? ['Alt+ArrowDown', 'Alt+ArrowUp', 'Alt+PageDown'] : ['Alt+ArrowUp', 'Alt+ArrowDown', 'Alt+PageUp'];
+    const available = alternatives.find(code => !out.composer.includes(code) && code !== out[other][0]);
+    if (!available) return Object.fromEntries(Object.entries(DEFAULT_KEYS).map(([name, codes]) => [name, [...codes]]));
+    out[name] = [available];
   }
   return out;
 }
 
-function readKeys() {
-  try { return normalizeKeys(JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))); }
+function readKeys(file) {
+  try { return normalizeKeys(JSON.parse(readFileSync(file, 'utf8'))); }
   catch { return normalizeKeys(DEFAULT_KEYS); }
 }
 
-function writeKeys(input) {
+function writeKeys(input, file) {
   const keys = normalizeKeys(input);
-  mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-  writeFileSync(CONFIG_PATH, `${JSON.stringify(keys, null, 2)}\n`, { mode: 0o600 });
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(keys, null, 2)}\n`, { mode: 0o600 });
   return keys;
 }
 const noStore = (body, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
@@ -133,6 +141,7 @@ function routeFromEvents(events) {
 export function apply(ctx, config = {}, runtime = {}) {
   // An explicit test seam keeps discovery fixtures out of the user's profile.
   const bridgeFile = runtime.bridgeFile || BRIDGE_FILE;
+  const configFile = runtime.configFile || CONFIG_PATH;
   const timeoutMs = Number.isInteger(config.timeoutMs) ? Math.min(45000, Math.max(1000, config.timeoutMs)) : 30000;
   const diag = message => { if (config.debug === true) ctx.logger?.info?.(`dsh-suggestions: ${message}`); };
   const cache = new Map();
@@ -236,11 +245,14 @@ export function apply(ctx, config = {}, runtime = {}) {
       recentUserMessages: body.recentUserMessages || [],
       recentTurns: validateTurns(body.recentTurns),
       earlierUserMessages: body.earlierUserMessages || [],
+      previousSuggestions: body.previousSuggestions || [],
     };
     if (!Array.isArray(source.recentUserMessages) || source.recentUserMessages.length > LIMITS.historyCount) throw new Error('invalid recentUserMessages');
     source.recentUserMessages = source.recentUserMessages.map(text => boundedText(text, 'recentUserMessages item', LIMITS.history));
     if (!Array.isArray(source.earlierUserMessages) || source.earlierUserMessages.length > 4) throw new Error('invalid earlierUserMessages');
     source.earlierUserMessages = source.earlierUserMessages.map(text => boundedText(text, 'earlierUserMessages item', 600));
+    if (!Array.isArray(source.previousSuggestions) || source.previousSuggestions.length > 10) throw new Error('invalid previousSuggestions');
+    source.previousSuggestions = source.previousSuggestions.map(text => boundedText(text, 'previousSuggestions item', LIMITS.suggestion, true));
     const raw = await complete({ system: SUGGEST_SYSTEM, input: suggestionInput(source), sessionId: body.sessionId, route, signal, temperature: 0.2 });
     return { suggestion: parseSuggestion(raw, source) };
   }
@@ -262,20 +274,26 @@ export function apply(ctx, config = {}, runtime = {}) {
 
   async function suggestionsFor(sessionId, request = {}, signal) {
     const manual = request.manual === true;
+    let previousSuggestions = manual ? request.previousSuggestions || [] : [];
+    if (!Array.isArray(previousSuggestions) || previousSuggestions.length > 10) throw new Error('invalid previousSuggestions');
+    previousSuggestions.forEach(text => boundedText(text, 'previousSuggestions item', LIMITS.suggestion, true));
     const entry = await abortable(readSession(sessionId, manual || request.fresh === true), signal);
     const summary = entry.summary;
+    if (request.candidateTurn !== undefined && (request.candidateTurn !== summary.turn || request.candidateRevision !== summary.revision)) previousSuggestions = [];
     const afterTurn = Number.isFinite(request.afterTurn) ? request.afterTurn : 0;
-    const base = { turn: summary.turn };
+    const base = { turn: summary.turn, revision: summary.revision };
     if (summary.running) return { ...base, status: 'running', suggestions: [] };
-    if (summary.turn <= afterTurn || !summary.usable || !summary.lastAssistantText) return { ...base, status: 'none', suggestions: [] };
+    if (!summary.turn) return { ...base, status: 'none', reason: 'no-history', suggestions: [] };
+    if (summary.turn <= afterTurn || !summary.usable || !summary.lastAssistantText) return { ...base, status: 'none', reason: 'unavailable', suggestions: [] };
     const fingerprint = createHash('sha256').update(JSON.stringify([summary.lastUserText, summary.lastAssistantText, summary.recentTurns, summary.earlierUserMessages])).digest('hex').slice(0, 16);
     const key = `${sessionId}#${summary.turn}#${summary.revision}#${fingerprint}`;
+    const taskKey = previousSuggestions.length ? `${key}#${createHash('sha256').update(JSON.stringify(previousSuggestions)).digest('hex').slice(0, 16)}` : key;
     const cached = cache.get(key);
     if (!manual && cached && Date.now() - cached.at < CACHE_TTL_MS) return { ...base, status: cached.suggestions.length ? 'ready' : 'none', suggestions: cached.suggestions };
-    let task = inFlight.get(key);
+    let task = inFlight.get(taskKey);
     if (task?.controller.signal.aborted) task = undefined;
     if (!task) {
-      const failure = failures.get(key);
+      const failure = failures.get(taskKey);
       if (!manual && failure && (failure.count >= 2 || Date.now() - failure.at < 10000)) return { ...base, status: 'none', suggestions: [] };
       if (inFlight.size >= 3) return { ...base, status: 'error', suggestions: [] };
       const controller = new AbortController();
@@ -287,23 +305,27 @@ export function apply(ctx, config = {}, runtime = {}) {
           recentUserMessages: summary.recentUserTexts,
           recentTurns: summary.recentTurns,
           earlierUserMessages: summary.earlierUserMessages,
+          previousSuggestions,
           sessionId,
         }, controller.signal, entry.route);
         const suggestions = value.suggestion ? [value.suggestion] : [];
-        if (!disposed && !controller.signal.aborted) { remember(cache, key, { at: Date.now(), suggestions }); failures.delete(key); }
+        if (!disposed && !controller.signal.aborted) {
+          if (!previousSuggestions.length || suggestions.length) remember(cache, key, { at: Date.now(), suggestions });
+          failures.delete(taskKey);
+        }
         return suggestions;
       })().catch(error => {
-        if (!controller.signal.aborted && !disposed) remember(failures, key, { at: Date.now(), count: (failures.get(key)?.count || 0) + 1 });
+        if (!controller.signal.aborted && !disposed) remember(failures, taskKey, { at: Date.now(), count: (failures.get(taskKey)?.count || 0) + 1 });
         throw error;
-      }).finally(() => { task.done = true; if (inFlight.get(key) === task) inFlight.delete(key); });
-      inFlight.set(key, task);
+      }).finally(() => { task.done = true; if (inFlight.get(taskKey) === task) inFlight.delete(taskKey); });
+      inFlight.set(taskKey, task);
     }
     try {
       const suggestions = await joinTask(task, signal);
       // Generation can finish after another window has already sent a message.
       // Never publish the old turn's result against a newer session snapshot.
       const latest = (await abortable(readSession(sessionId, true), signal)).summary;
-      if (latest.running || latest.turn !== summary.turn || latest.revision !== summary.revision) return { turn: latest.turn, status: latest.running ? 'running' : 'none', suggestions: [] };
+      if (latest.running || latest.turn !== summary.turn || latest.revision !== summary.revision) return { turn: latest.turn, revision: latest.revision, status: latest.running ? 'running' : 'none', suggestions: [] };
       return { ...base, status: suggestions.length ? 'ready' : 'none', suggestions };
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -370,8 +392,8 @@ export function apply(ctx, config = {}, runtime = {}) {
       try { body = await request.json(); } catch { return noStore({ ok: false, error: { message: 'body is not JSON' } }, 400); }
       if (body?.action === 'config') {
         try {
-          if (body.keys === undefined) return noStore({ ok: true, value: { keys: readKeys(), defaults: normalizeKeys(DEFAULT_KEYS) } });
-          return noStore({ ok: true, value: { keys: writeKeys(body.keys), defaults: normalizeKeys(DEFAULT_KEYS) } });
+          if (body.keys === undefined) return noStore({ ok: true, value: { keys: readKeys(configFile), defaults: normalizeKeys(DEFAULT_KEYS) } });
+          return noStore({ ok: true, value: { keys: writeKeys(body.keys, configFile), defaults: normalizeKeys(DEFAULT_KEYS) } });
         } catch (error) { return noStore({ ok: false, error: { message: error.message } }, 400); }
       }
       let sessionId;

@@ -49,7 +49,7 @@ function harness(options = {}) {
     webServer: { getOrigin: () => 'http://127.0.0.1:1', register(definition) { bridge = definition.handler; return () => {}; } },
   };
   const ctx = { get: name => services[name], inject(_names, callback) { callback(ctx); }, effect(fn) { const cleanup = fn(); effects.push(cleanup); return cleanup; }, logger: { info() {} } };
-  apply(ctx, { timeoutMs: 1000 }, { bridgeFile: file });
+  apply(ctx, { timeoutMs: 1000 }, { bridgeFile: file, configFile: file + '.keys' });
   const api = async (body, signal) => (await composer.fetch({ json: async () => body, signal })).json();
   const bridgeCall = async body => {
     const token = JSON.parse(readFileSync(file, 'utf8')).token;
@@ -59,10 +59,46 @@ function harness(options = {}) {
     return { status: res.status, ...res.body };
   };
   const close = () => { for (const effect of effects.reverse()) effect?.(); };
-  return { state, calls, api, bridgeCall, close, file, handles: () => disposedHandles };
+  return { state, calls, api, bridgeCall, close, file, configFile: file + '.keys', handles: () => disposedHandles };
 }
 
 try {
+  await test('new candidates include offered choices and duplicate output leaves the cached choice usable', async () => {
+    const h = harness();
+    try {
+      const initial = (await h.api({ sessionId: 'own' })).value;
+      const previousSuggestions = [...initial.suggestions];
+      assert.equal((await h.api({ sessionId: 'own', manual: true, candidateTurn: initial.turn, candidateRevision: initial.revision, previousSuggestions })).value.status, 'none');
+      assert.deepEqual(JSON.parse(h.calls.at(-1).messages[0].content[0].text).previousSuggestions, previousSuggestions);
+      assert.deepEqual((await h.api({ sessionId: 'own' })).value.suggestions, initial.suggestions);
+      assert.equal(h.calls.length, 2);
+      assert.equal((await h.api({ sessionId: 'own', manual: true, previousSuggestions: Array(11).fill('已有建议') })).ok, false);
+      assert.equal(h.calls.length, 2);
+      assert.equal(parseSuggestion('["已有 建议。"]', { previousSuggestions: ['已有建议'] }), '');
+    } finally { h.close(); }
+  });
+
+  await test('candidate exclusions from a different turn or revision are discarded', async () => {
+    const h = harness();
+    try {
+      const result = await h.api({ sessionId: 'own', manual: true, previousSuggestions: ['把第二部分也核实，列出还没有依据的结论'], candidateTurn: 0, candidateRevision: 0 });
+      assert.equal(result.value.status, 'ready');
+      assert.equal(JSON.parse(h.calls[0].messages[0].content[0].text).previousSuggestions, undefined);
+    } finally { h.close(); }
+  });
+
+  await test('settings route persists keys and reads them back from its configured document', async () => {
+    const h = harness();
+    try {
+      const initial = await h.api({ action: 'config' });
+      assert.deepEqual(initial.value.keys, { composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] });
+      const keys = { composer: ['Tab'], next: ['F2'], prev: ['F3'] };
+      assert.deepEqual((await h.api({ action: 'config', keys })).value.keys, keys);
+      assert.deepEqual((await h.api({ action: 'config' })).value.keys, keys);
+      assert.deepEqual(JSON.parse(readFileSync(h.configFile, 'utf8')), keys);
+      assert.equal(h.calls.length, 0);
+    } finally { h.close(); }
+  });
   await test('shared suggestion policy preserves the answer ending and accepts real abstention only', () => {
     const answer = '原任务及约束。' + '中间内容。'.repeat(2500) + '结尾：第二部分尚未核实。';
     const context = JSON.parse(suggestionInput({ assistantAnswer: answer, userRequest: '不改文件', recentUserMessages: ['只分析'] }));
@@ -331,9 +367,12 @@ try {
 }
 
 await test('key configuration normalizes to defaults and rejects collisions', () => {
-  assert.deepEqual(normalizeKeys({}), { composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] });
+  assert.deepEqual(normalizeKeys({}), { composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] });
   assert.deepEqual(normalizeKeys({ composer: ['F2'], next: ['F3'], prev: ['F4'] }), { composer: ['F2'], next: ['F3'], prev: ['F4'] });
-  assert.deepEqual(normalizeKeys({ composer: ['F2'], next: ['F2'], prev: ['F4'] }), { composer: ['F2'], next: ['AltRight'], prev: ['F4'] });
-  assert.deepEqual(normalizeKeys({ composer: ['F2', 'F2', 'bad code!'], next: 'F3', prev: '' }), { composer: ['F2'], next: ['F3'], prev: ['AltLeft'] });
-  assert.deepEqual(normalizeKeys({ next: ['F3'], prev: ['F3'] }), { composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] });
+  assert.deepEqual(normalizeKeys({ composer: ['F2'], next: ['F2'], prev: ['F4'] }), { composer: ['F2'], next: ['Alt+ArrowDown'], prev: ['F4'] });
+  assert.deepEqual(normalizeKeys({ composer: ['F2', 'F2', 'bad code!'], next: 'F3', prev: '' }), { composer: ['F2'], next: ['F3'], prev: ['Alt+ArrowUp'] });
+  assert.deepEqual(normalizeKeys({ next: ['F3'], prev: ['F3'] }), { composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] });
+  assert.deepEqual(normalizeKeys({ composer: ['Control+Shift+KeyP'], next: ['Alt+ArrowDown'], prev: ['Shift+Alt+ArrowUp'] }), { composer: ['Control+Shift+KeyP'], next: ['Alt+ArrowDown'], prev: ['Alt+Shift+ArrowUp'] });
+  assert.deepEqual(normalizeKeys({ composer: ['Alt+ArrowDown', 'Alt+ArrowUp', 'Alt+PageDown'] }), normalizeKeys({}));
+  assert.deepEqual(normalizeKeys({ next: ['Alt+UnknownCode'] }), normalizeKeys({}));
 });

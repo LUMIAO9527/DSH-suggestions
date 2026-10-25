@@ -3,7 +3,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const { useCallback, useEffect, useRef, useState } = React;
+    const { useCallback, useEffect, useLayoutEffect, useRef, useState } = React;
     const ENDPOINT = 'api/dsh-suggestions';
     const POLL_MS = 2500;
     const MAX_BACKOFF_MS = 15000;
@@ -100,10 +100,43 @@ window.__ModuleLoader__.load({
         h('text', { x: 15, y: 12.5, textAnchor: 'middle', fontSize: 9.5, fill: 'currentColor', fontFamily: 'inherit' }, 'Tab'));
     }
 
-    const DEFAULT_KEYS = { composer: ['Tab', 'ArrowRight'], next: ['AltRight'], prev: ['AltLeft'] };
+    const DEFAULT_KEYS = { composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] };
     const KEYS_EVENT = 'dsh-suggestions:keys';
     const KEY_LABELS = { Tab: 'Tab', ArrowRight: '→', ArrowLeft: '←', ArrowUp: '↑', ArrowDown: '↓', AltLeft: '左 Alt', AltRight: '右 Alt', Escape: 'Esc', Enter: 'Enter', Space: 'Space', Backspace: 'Backspace' };
-    const keyLabel = code => KEY_LABELS[code] || String(code || '').replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad/, 'Num ');
+    const keyLabel = binding => String(binding || '').split('+').map(code => KEY_LABELS[code] || code.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad/, 'Num ')).join('＋');
+    const isChinese = language => /^zh/i.test(language || (typeof navigator !== 'undefined' ? navigator.language : ''));
+    function keyCode(event) {
+      if (event.code && event.code !== 'Unidentified') return event.code;
+      if (event.key === 'AltGraph') return 'AltRight';
+      if (event.key === 'Alt') return event.location === 2 ? 'AltRight' : 'AltLeft';
+      return ['Tab', 'Escape', 'ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(event.key) ? event.key : '';
+    }
+    function keyBinding(event) {
+      const code = keyCode(event);
+      if (!code) return '';
+      const modifiers = [['ctrlKey', 'Control'], ['altKey', 'Alt'], ['shiftKey', 'Shift'], ['metaKey', 'Meta']]
+        .filter(([flag, name]) => event[flag] && !code.startsWith(name)).map(([, name]) => name);
+      return [...modifiers, code].join('+');
+    }
+    const normalizeCandidate = text => text.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+
+    class CandidateDeck {
+      constructor() { this.reset(); }
+      reset(sessionId = '', turn = 0, revision = 0) { this.sessionId = sessionId; this.turn = turn; this.revision = revision; this.items = []; this.index = -1; }
+      bind(sessionId, turn, revision) {
+        if (this.sessionId !== sessionId || this.turn !== turn || this.revision !== revision) this.reset(sessionId, turn, revision);
+      }
+      get scope() { return `${this.sessionId}#${this.turn}#${this.revision}`; }
+      get current() { return this.items[this.index]; }
+      add(text) {
+        if (this.items.some(item => normalizeCandidate(item) === normalizeCandidate(text))) return false;
+        this.items.push(text);
+        if (this.items.length > MAX_CANDIDATES) this.items.shift();
+        this.index = this.items.length - 1;
+        return true;
+      }
+      select(index) { if (index < 0 || index >= this.items.length) return undefined; this.index = index; return this.current; }
+    }
 
     function SuggestionHint({ sessionId, useInput, useSession, inputActions }) {
       const input = useInput(state => state);
@@ -120,6 +153,7 @@ window.__ModuleLoader__.load({
       const [showChip, setShowChip] = useState(false);
       const [layout, setLayout] = useState(null);
       const [generating, setGenerating] = useState(false);
+      const [feedback, setFeedback] = useState(null);
       const anchorRef = useRef(null);
       const consumedTurnRef = useRef(0);
       const sentTurnRef = useRef(0);
@@ -129,22 +163,43 @@ window.__ModuleLoader__.load({
       const keyRef = useRef({});
       const generationRef = useRef(null);
       const optimizationRef = useRef(null);
-      const candidatesRef = useRef([]);
-      const candidateIndexRef = useRef(-1);
+      const deckRef = useRef(null);
+      if (!deckRef.current) deckRef.current = new CandidateDeck();
       const shownRef = useRef('');
       const altRef = useRef(null);
+      const browsePressRef = useRef('');
       const adoptedRef = useRef(null);
       const activeRef = useRef(null);
       activeRef.current = { sessionId, draft, empty, idle, runningTurn, sending };
-      const hintKey = hint ? `${hint.sessionId}#${hint.turn}` : '';
+      const hintKey = hint ? `${hint.sessionId}#${hint.turn}#${hint.revision || 0}` : '';
       const visible = Boolean(hint?.text) && hint.sessionId === sessionId && empty && idle && !runningTurn && !sending && dismissedKey !== hintKey;
-      const shouldPoll = Boolean(sessionId) && empty && idle && !runningTurn && !sending && !generating;
+      const shouldPoll = Boolean(sessionId) && empty && idle && !runningTurn && !sending && !generating && !feedback;
       // A manual request clears the hint, so the composer would otherwise look
       // idle for up to 40 seconds. The placeholder doubles as a status line.
       const generatingLabel = (typeof navigator !== 'undefined' && /^zh/i.test(navigator.language || '')) ? '正在生成建议…' : 'Generating a suggestion…';
-      const showing = visible || (generating && empty && idle && !runningTurn && !sending);
+      const notices = isChinese() ? {
+        none: '当前会话暂无合适建议', more: '没有新的合适建议', history: '开始对话后可生成建议', running: '回答完成后可生成建议',
+        error: '建议生成失败，请重试', timeout: '建议生成超时，请重试', first: '没有更早的建议',
+      } : {
+        none: 'No suitable suggestion for this conversation', more: 'No new suitable suggestion', history: 'Start a conversation to get suggestions', running: 'Wait for the answer to finish',
+        error: 'Could not generate a suggestion. Try again', timeout: 'Suggestion request timed out. Try again', first: 'No earlier suggestion',
+      };
+      const showing = visible || ((generating || feedback) && empty && idle && !runningTurn && !sending);
+      useEffect(() => {
+        if (!feedback) return undefined;
+        const timer = setTimeout(() => {
+          setFeedback(null);
+          const deck = deckRef.current, active = activeRef.current;
+          if (deck.current && deck.sessionId === active.sessionId && active.empty && active.idle && !active.sending && !active.runningTurn) {
+            shownRef.current = deck.current; setDismissedKey('');
+            setHint({ sessionId: deck.sessionId, turn: deck.turn, revision: deck.revision, text: deck.current });
+          }
+        }, 3500);
+        return () => clearTimeout(timer);
+      }, [feedback]);
 
       const keysRef = useRef(DEFAULT_KEYS);
+      const [keys, setKeys] = useState(DEFAULT_KEYS);
 
       // The settings card writes through the host route; the composer reads the
       // same keys, so a saved change applies without a reload.
@@ -152,9 +207,9 @@ window.__ModuleLoader__.load({
         let cancelled = false;
         fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config' }) })
           .then(response => response.ok ? response.json() : null)
-          .then(payload => { if (!cancelled && payload?.ok && payload.value?.keys) keysRef.current = payload.value.keys; })
+          .then(payload => { if (!cancelled && payload?.ok && payload.value?.keys) { keysRef.current = payload.value.keys; setKeys(payload.value.keys); } })
           .catch(() => {});
-        const onKeys = event => { if (event?.detail) keysRef.current = event.detail; };
+        const onKeys = event => { if (event?.detail) { keysRef.current = event.detail; setKeys(event.detail); } };
         window.addEventListener(KEYS_EVENT, onKeys);
         return () => { cancelled = true; window.removeEventListener(KEYS_EVENT, onKeys); };
       }, []);
@@ -169,12 +224,14 @@ window.__ModuleLoader__.load({
       const restoreAdopted = useCallback(() => {
         const adopted = adoptedRef.current;
         if (!adopted) return;
-        const index = candidatesRef.current.indexOf(adopted.text);
+        const deck = deckRef.current;
+        if (adopted.scope !== deck.scope) return;
+        const index = deck.items.indexOf(adopted.text);
         if (index < 0) return;
-        candidateIndexRef.current = index;
+        deck.select(index);
         shownRef.current = adopted.text;
         setDismissedKey('');
-        setHint({ sessionId: activeRef.current.sessionId, turn: lastTurnRef.current, text: adopted.text });
+        setHint({ sessionId: deck.sessionId, turn: deck.turn, revision: deck.revision, text: adopted.text });
       }, []);
 
       useEffect(() => {
@@ -184,10 +241,12 @@ window.__ModuleLoader__.load({
         lastEmptyAtRef.current = 0;
         previousDraftRef.current = draft;
         keyRef.current = {};
-        candidatesRef.current = [];
-        candidateIndexRef.current = -1;
+        deckRef.current.reset(sessionId);
         adoptedRef.current = null;
         setGenerating(false);
+        setFeedback(null);
+        altRef.current = null;
+        browsePressRef.current = '';
         clearHint();
         setDismissedKey('');
         setShowChip(false);
@@ -206,8 +265,7 @@ window.__ModuleLoader__.load({
         consumedTurnRef.current = Math.max(consumedTurnRef.current, lastTurnRef.current);
         sentTurnRef.current = Math.max(sentTurnRef.current, consumedTurnRef.current);
         lastEmptyAtRef.current = Date.now();
-        candidatesRef.current = [];
-        candidateIndexRef.current = -1;
+        deckRef.current.reset(sessionId);
         adoptedRef.current = null;
         clearHint();
         optimizationRef.current?.controller.abort();
@@ -215,7 +273,10 @@ window.__ModuleLoader__.load({
         generationRef.current?.controller.abort();
         generationRef.current = null;
         setGenerating(false);
+        setFeedback(null);
         keyRef.current = {};
+        altRef.current = null;
+        browsePressRef.current = '';
       }, [sessionId, pendingSubmissionKey, runningTurn, clearHint]);
 
       useEffect(() => {
@@ -236,6 +297,8 @@ window.__ModuleLoader__.load({
           optimizationRef.current = null;
         }
       }, [draft, idle, phase, sessionId, clearHint, restoreAdopted]);
+
+      useEffect(() => { if (!empty || !idle) setFeedback(null); }, [empty, idle]);
 
       useEffect(() => {
         const pending = generationRef.current;
@@ -272,10 +335,15 @@ window.__ModuleLoader__.load({
             if (cancelled || activeRef.current.sessionId !== sessionId || !activeRef.current.empty || !activeRef.current.idle || activeRef.current.sending || activeRef.current.runningTurn) return;
             const value = payload?.ok ? payload.value : undefined;
             const turn = Number(value?.turn) || 0;
+            const revision = Number(value?.revision) || 0;
+            const deck = deckRef.current;
+            const changedTurn = deck.turn > 0 && (turn !== deck.turn || revision !== deck.revision);
+            if (changedTurn) { deck.reset(sessionId, turn, revision); adoptedRef.current = null; clearHint(); }
             lastTurnRef.current = Math.max(lastTurnRef.current, turn);
             if (value?.status === 'running') {
               consumedTurnRef.current = Math.max(consumedTurnRef.current, lastTurnRef.current);
               sentTurnRef.current = Math.max(sentTurnRef.current, consumedTurnRef.current);
+              deckRef.current.reset(sessionId); adoptedRef.current = null;
               clearHint();
               schedule(3500);
             } else if (value?.status === 'ready' && typeof value.suggestions?.[0] === 'string' && turn > consumedTurnRef.current) {
@@ -284,16 +352,18 @@ window.__ModuleLoader__.load({
               // Polling supplies the suggestion of a turn; it must never move the
               // cursor while a candidate is already on screen.
               if (!text) clearHint();
-              else if (!shownRef.current) present(text, turn);
+              else if (!shownRef.current) present(text, turn, revision);
               backoff = POLL_MS;
               schedule(5000); // Also notice turns sent from another window.
             } else {
-              clearHint();
+              // A consumed-turn response is expected after adopting and then
+              // clearing a draft. It must not erase a locally restored candidate.
+              if (changedTurn || turn <= sentTurnRef.current || !shownRef.current) clearHint();
               backoff = Math.min(Math.round(backoff * 1.4), MAX_BACKOFF_MS);
               schedule(value?.status === 'error' ? Math.max(5000, backoff) : backoff);
             }
           } catch {
-            if (!cancelled) { clearHint(); backoff = Math.min(backoff * 2, MAX_BACKOFF_MS); schedule(backoff); }
+            if (!cancelled) { backoff = Math.min(backoff * 2, MAX_BACKOFF_MS); schedule(backoff); }
           } finally { clearTimeout(timeout); running = false; }
         };
         const onVisibility = () => {
@@ -308,7 +378,7 @@ window.__ModuleLoader__.load({
 
       // Measure the native placeholder itself: mobile layouts and composer skins
       // own its position, typography and available width, including transitions.
-      useEffect(() => {
+      useLayoutEffect(() => {
         if (!showing) { setLayout(null); return undefined; }
         let frame;
         let placeholder;
@@ -345,23 +415,20 @@ window.__ModuleLoader__.load({
         };
       }, [showing, sessionId]);
 
-      // Show a suggestion and make it the cursor of the candidate list. A text
-      // already seen this session is revisited instead of duplicated, so Up can
-      // walk back through what was offered before.
-      const present = useCallback((text, turn) => {
+      const present = useCallback((text, turn, revision = 0, newOnly = false) => {
         const trimmed = typeof text === 'string' ? text.trim() : '';
-        if (!trimmed) return;
-        const list = candidatesRef.current;
-        const existing = list.lastIndexOf(trimmed);
-        if (existing >= 0) candidateIndexRef.current = existing;
-        else {
-          list.push(trimmed);
-          if (list.length > MAX_CANDIDATES) list.shift();
-          candidateIndexRef.current = list.length - 1;
+        if (!trimmed) return false;
+        const deck = deckRef.current;
+        deck.bind(activeRef.current.sessionId, turn, revision);
+        if (!deck.add(trimmed)) {
+          if (newOnly) return false;
+          deck.select(deck.items.findIndex(item => normalizeCandidate(item) === normalizeCandidate(trimmed)));
         }
         shownRef.current = trimmed;
-        setHint({ sessionId: activeRef.current.sessionId, turn, text: trimmed });
+        setFeedback(null);
+        setHint({ sessionId: deck.sessionId, turn, revision, text: trimmed });
         setShowChip(hintUses(`${activeRef.current.sessionId}#${turn}`) <= 3);
+        return true;
       }, []);
 
       const accept = useCallback(() => {
@@ -371,7 +438,7 @@ window.__ModuleLoader__.load({
         keyRef.current = { mode: 'accepted', at: Date.now(), draft: hint.text };
         inputActions.setDraft(hint.text);
         consumedTurnRef.current = Math.max(consumedTurnRef.current, hint.turn);
-        adoptedRef.current = { text: hint.text };
+        adoptedRef.current = { text: hint.text, scope: deckRef.current.scope };
         clearHint();
         editor?.focus();
       }, [visible, hint, sessionId, inputActions, clearHint]);
@@ -379,56 +446,55 @@ window.__ModuleLoader__.load({
       const generate = useCallback(async () => {
         const state = activeRef.current;
         if (!state.sessionId || !state.empty || !state.idle || state.sending || state.runningTurn || generationRef.current) return;
-        const pending = { sessionId: state.sessionId, controller: new AbortController() };
+        const deck = deckRef.current;
+        const pending = { sessionId: state.sessionId, controller: new AbortController(), previousSuggestions: [...deck.items], candidateTurn: deck.turn, candidateRevision: deck.revision };
         generationRef.current = pending;
         setGenerating(true);
+        setFeedback(null);
         clearHint();
         const timeout = setTimeout(() => pending.controller.abort(), 40000);
         try {
-          const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, signal: pending.controller.signal, body: JSON.stringify({ sessionId: pending.sessionId, action: 'suggest', manual: true, fresh: true, afterTurn: sentTurnRef.current || undefined }) });
-          if (!response.ok) return;
+          const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, signal: pending.controller.signal, body: JSON.stringify({ sessionId: pending.sessionId, action: 'suggest', manual: true, fresh: true, afterTurn: sentTurnRef.current || undefined, previousSuggestions: pending.previousSuggestions, candidateTurn: pending.candidateTurn, candidateRevision: pending.candidateRevision }) });
+          if (!response.ok) throw new Error('suggestion request failed');
           const payload = await response.json();
+          if (!payload?.ok) throw new Error('suggestion request failed');
           const result = payload?.ok ? payload.value : undefined;
           const current = activeRef.current;
           if (pending.controller.signal.aborted || generationRef.current !== pending || current.sessionId !== pending.sessionId || !current.empty || !current.idle || current.sending || current.runningTurn) return;
           const turn = Number(result?.turn) || 0;
+          const revision = Number(result?.revision) || 0;
+          const deck = deckRef.current;
+          if (Number.isFinite(result?.turn) && (turn !== deck.turn || revision !== deck.revision)) { deck.reset(pending.sessionId, turn, revision); adoptedRef.current = null; }
           lastTurnRef.current = Math.max(lastTurnRef.current, turn);
           if (result?.status === 'running') {
             consumedTurnRef.current = Math.max(consumedTurnRef.current, turn);
             sentTurnRef.current = Math.max(sentTurnRef.current, turn);
+            deck.reset(pending.sessionId); adoptedRef.current = null;
+            setFeedback({ text: notices.running });
           } else if (result?.status === 'ready' && turn > sentTurnRef.current && typeof result.suggestions?.[0] === 'string' && result.suggestions[0].trim()) {
             consumedTurnRef.current = sentTurnRef.current;
             setDismissedKey('');
-            present(result.suggestions[0], turn);
-          }
-        } catch { /* Leave the composer available when no suggestion is returned. */ }
+            if (!present(result.suggestions[0], turn, revision, true)) setFeedback({ text: notices.more });
+          } else setFeedback({ text: result?.status === 'error' ? notices.error : result?.reason === 'no-history' || turn === 0 ? notices.history : pending.previousSuggestions.length ? notices.more : notices.none });
+        } catch {
+          const current = activeRef.current;
+          if (generationRef.current === pending && current.sessionId === pending.sessionId && current.empty && current.idle && !current.sending && !current.runningTurn) setFeedback({ text: pending.controller.signal.aborted ? notices.timeout : notices.error });
+        }
         finally {
           clearTimeout(timeout);
           if (generationRef.current === pending) { generationRef.current = null; setGenerating(false); }
         }
-      }, [present, clearHint]);
+      }, [present, clearHint, notices.none, notices.more, notices.history, notices.running, notices.error, notices.timeout]);
 
-      // Up walks back through candidates already shown; Down moves forward and
-      // asks for a new one once the tail is reached.
       const step = useCallback(direction => {
-        const list = candidatesRef.current;
-        const index = candidateIndexRef.current;
-        if (direction < 0) {
-          if (index <= 0 || !list[index - 1]) return;
-          candidateIndexRef.current = index - 1;
-          shownRef.current = list[index - 1];
-          setDismissedKey('');
-          setHint({ sessionId: activeRef.current.sessionId, turn: lastTurnRef.current, text: list[index - 1] });
-          return;
-        }
-        if (index >= 0 && index < list.length - 1) {
-          candidateIndexRef.current = index + 1;
-          shownRef.current = list[index + 1];
-          setDismissedKey('');
-          setHint({ sessionId: activeRef.current.sessionId, turn: lastTurnRef.current, text: list[index + 1] });
-          return;
-        }
-        generate();
+        const active = activeRef.current;
+        if (!active.empty || !active.idle || active.sending || active.runningTurn) return;
+        const deck = deckRef.current;
+        const text = deck.select(deck.index + direction);
+        if (!text) { if (direction > 0) generate(); return; }
+        generationRef.current?.controller.abort(); generationRef.current = null; setGenerating(false);
+        shownRef.current = text; setFeedback(null); setDismissedKey('');
+        setHint({ sessionId: deck.sessionId, turn: deck.turn, revision: deck.revision, text });
       }, [generate]);
 
       const optimize = useCallback(async () => {
@@ -455,68 +521,86 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!sessionId) return undefined;
         const onKeyDown = event => {
-          if (event.isComposing || event.keyCode === 229 || event.repeat) { keyRef.current = {}; return; }
+          if (event.isComposing || event.keyCode === 229 || event.repeat) { keyRef.current = {}; altRef.current = null; return; }
+          const code = keyCode(event);
           const editor = composerEditor(anchorRef.current);
           if (!editor || !(document.activeElement === editor || editor.contains(document.activeElement))) { keyRef.current = {}; altRef.current = null; return; }
           const current = activeRef.current;
           if (!current.idle || current.sending || current.runningTurn) { keyRef.current = {}; altRef.current = null; return; }
-          // Alt on its own browses the candidates: Right Alt moves forward and asks
-          // for a new one at the tail, Left Alt walks back. It stays native once
-          // the composer holds a draft, and any other key cancels the gesture.
-          const browse = event.code === keysRef.current.next[0] ? 1 : event.code === keysRef.current.prev[0] ? -1 : 0;
+          const binding = keyBinding(event);
+          const browse = binding === keysRef.current.next[0] ? 1 : binding === keysRef.current.prev[0] ? -1 : 0;
           if (browse) {
-            const plain = event.code.startsWith('Alt') ? (!event.shiftKey && !event.ctrlKey && !event.metaKey) : (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey);
-            if (!plain || !current.empty || (!hintKey && candidateIndexRef.current < 0)) { altRef.current = null; return; }
+            if (!current.empty) { altRef.current = null; browsePressRef.current = ''; return; }
             const at = Date.now();
             const previousAlt = altRef.current;
-            const doubledAlt = previousAlt?.code === event.code && at - previousAlt.at <= 500;
-            altRef.current = doubledAlt ? null : { code: event.code, at };
-            event.preventDefault();
-            if (doubledAlt) step(browse);
+            const doubledAlt = previousAlt?.code === code && at - previousAlt.at <= 500;
+            altRef.current = doubledAlt ? null : { code, at };
+            browsePressRef.current = code;
+            keyRef.current = {};
+            event.preventDefault(); event.stopPropagation();
+            if (binding.includes('+') || doubledAlt) step(browse);
             return;
           }
-          if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) { keyRef.current = {}; altRef.current = null; return; }
-          if (event.key === 'Escape' && (visible || generationRef.current)) {
+          altRef.current = null;
+          browsePressRef.current = '';
+          if ((event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) && !keysRef.current.composer.includes(binding)) { keyRef.current = {}; altRef.current = null; return; }
+          if (event.key === 'Escape' && (visible || generationRef.current || feedback)) {
             setDismissedKey(hintKey || `${sessionId}#${lastTurnRef.current}`);
             generationRef.current?.controller.abort();
             generationRef.current = null;
             setGenerating(false);
+            setFeedback(null);
             keyRef.current = {};
             return;
           }
           const now = Date.now();
           const composerKeys = keysRef.current.composer;
-          const shortcut = composerKeys.includes(event.code);
+          const shortcut = composerKeys.includes(binding);
           const previous = keyRef.current;
           const mode = current.empty ? 'empty' : 'draft';
-          const doubled = previous.key === event.code && previous.mode === mode && previous.draft === current.draft && now - previous.at <= 500;
+          const doubled = previous.key === binding && previous.mode === mode && previous.draft === current.draft && now - previous.at <= 500;
           // A second press in the same acceptance gesture must not optimize
           // the suggestion that the first press has just inserted.
           if (shortcut && previous.mode === 'accepted' && previous.draft === current.draft && now - previous.at <= 500) { event.preventDefault(); event.stopPropagation(); return; }
           if (current.empty) {
             if (visible && shortcut && !doubled) { event.preventDefault(); event.stopPropagation(); accept(); return; }
             if (!shortcut) { keyRef.current = {}; return; }
-          } else if (!shortcut || (event.code === 'ArrowRight' && !caretAtEnd(editor))) {
+          } else if (!shortcut || (code === 'ArrowRight' && !caretAtEnd(editor))) {
             keyRef.current = {};
             return;
           }
           // Keep focus in the editor for the second Tab; a lone Right remains
           // native caret movement when no suggestion is being accepted.
-          if (doubled || (shortcut && event.code !== 'ArrowRight')) { event.preventDefault(); event.stopPropagation(); }
-          keyRef.current = doubled ? {} : { key: event.code, mode, draft: current.draft, at: now };
+          if (doubled || (shortcut && code !== 'ArrowRight')) { event.preventDefault(); event.stopPropagation(); }
+          keyRef.current = doubled ? {} : { key: binding, mode, draft: current.draft, at: now };
           if (doubled) { if (current.empty) generate(); else optimize(); }
         };
-        const resetKeys = () => { keyRef.current = {}; altRef.current = null; };
+        const onKeyUp = event => {
+          if (!browsePressRef.current || ![browsePressRef.current, 'AltLeft', 'AltRight'].includes(keyCode(event))) return;
+          // A handled bare Alt must not hand focus to the browser/menu on release.
+          event.preventDefault(); event.stopPropagation(); browsePressRef.current = '';
+        };
+        const resetKeys = () => { keyRef.current = {}; altRef.current = null; browsePressRef.current = ''; };
         window.addEventListener('keydown', onKeyDown, true);
+        window.addEventListener('keyup', onKeyUp, true);
         window.addEventListener('blur', resetKeys);
         window.addEventListener('focusout', resetKeys, true);
-        return () => { window.removeEventListener('keydown', onKeyDown, true); window.removeEventListener('blur', resetKeys); window.removeEventListener('focusout', resetKeys, true); };
-      }, [sessionId, visible, hintKey, accept, generate, optimize, step]);
+        return () => { window.removeEventListener('keydown', onKeyDown, true); window.removeEventListener('keyup', onKeyUp, true); window.removeEventListener('blur', resetKeys); window.removeEventListener('focusout', resetKeys, true); };
+      }, [sessionId, visible, hintKey, accept, generate, optimize, step, feedback]);
 
-      return h('div', { ref: anchorRef, 'data-dsh-suggestions': showing && layout ? (visible ? 'hint' : 'generating') : 'anchor', style: showing ? { position: 'absolute', top: 0, left: 0, right: 0, height: 1, padding: 0, border: 0, pointerEvents: 'none', zIndex: 3 } : { display: 'none' } },
-        showing && layout ? h('div', { 'aria-hidden': true, 'data-dsh-suggestions-text': '', style: { ...layout, position: 'absolute', display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none', background: 'transparent', whiteSpace: 'nowrap', overflow: 'hidden', opacity: visible ? layout.opacity : '0.5' } },
-          h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, visible ? hint.text : generatingLabel),
-          visible && showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: '按 Tab 或 → 采用这条建议；双击左 / 右 Alt 翻看', onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycapSvg()) : null) : null);
+      const deck = deckRef.current;
+      const browseButton = (direction, label) => h('button', { type: 'button', 'aria-label': label, title: label,
+        disabled: direction < 0 ? deck.index <= 0 : generating,
+        onMouseDown: event => event.preventDefault(), onClick: () => step(direction),
+        style: { border: 0, background: 'transparent', color: 'inherit', padding: '0 5px', minWidth: 28, minHeight: 0, font: 'inherit', cursor: 'pointer', pointerEvents: 'auto', touchAction: 'manipulation' } }, direction < 0 ? '‹' : '›');
+      return h('div', { ref: anchorRef, 'data-dsh-suggestions': showing && layout ? (visible ? 'hint' : generating ? 'generating' : 'status') : 'anchor', style: showing ? { position: 'absolute', top: 0, left: 0, right: 0, height: 1, padding: 0, border: 0, pointerEvents: 'none', zIndex: 3 } : { display: 'none' } },
+        showing && layout ? h('div', { 'data-dsh-suggestions-text': '', style: { ...layout, position: 'absolute', display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none', background: 'transparent', whiteSpace: 'nowrap', overflow: 'hidden' } },
+          h('span', { 'aria-hidden': visible ? true : undefined, role: visible ? undefined : 'status', style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, visible ? hint.text : generating ? generatingLabel : feedback?.text),
+          visible && showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: keys.composer.map(keyLabel).join(' / '), onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycapSvg()) : null,
+          deck.items.length > 0 ? h('span', { 'data-dsh-suggestions-pager': '', style: { flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 0, opacity: 0.7, pointerEvents: 'auto' } },
+            browseButton(-1, (isChinese() ? '上一条' : 'Previous') + ' (' + keyLabel(keys.prev[0]) + ')'),
+            h('span', { 'data-dsh-suggestions-page': '', style: { fontSize: '11px', minWidth: 22, textAlign: 'center' } }, `${deck.index + 1}/${deck.items.length}`),
+            browseButton(1, (isChinese() ? '下一条' : 'Next') + ' (' + keyLabel(keys.next[0]) + ')')) : null) : null);
     }
 
     const CARD_BUTTON = { border: '1px solid currentColor', borderRadius: 6, background: 'transparent', color: 'inherit', padding: '2px 10px', fontSize: 12, cursor: 'pointer', opacity: 0.85 };
@@ -524,11 +608,11 @@ window.__ModuleLoader__.load({
     // Shown inside Settings (and the Plugins page when the host serves the
     // bundle form). The card only talks to the host route, so the composer and
     // the form can never disagree about what is saved.
-    function SettingsCard() {
-      const zh = typeof navigator !== 'undefined' && /^zh/i.test(navigator.language || '');
+    function SettingsCard({ language } = {}) {
+      const zh = isChinese(language);
       const TEXT = zh ? {
         title: '输入框建议',
-        hint: '点“修改”后按下要用的键。一个键只给一个动作，左、右 Alt 是分开的。',
+        hint: '点“修改”后按下按键或组合键。',
         composer: '采纳 / 生成 / 优化',
         composerNote: '单击采纳，双击生成或优化草稿',
         next: '翻到下一条',
@@ -542,7 +626,7 @@ window.__ModuleLoader__.load({
         failed: '保存失败',
       } : {
         title: 'Composer suggestions',
-        hint: 'Click Change, then press the key you want. One key belongs to one action; Left and Right Alt count as different keys.',
+        hint: 'Click Change, then press a key or key combination.',
         composer: 'Accept / generate / optimize',
         composerNote: 'Press once to accept, twice to generate or improve the draft',
         next: 'Browse forward',
@@ -575,10 +659,10 @@ window.__ModuleLoader__.load({
         const onKey = event => {
           event.preventDefault(); event.stopPropagation();
           if (event.key === 'Escape') { setRecording(''); return; }
-          if (['Shift', 'Control', 'Meta', 'AltGraph', 'CapsLock', 'Fn'].includes(event.key)) return;
-          if (/^(Shift|Control|Meta)(Left|Right)$/.test(event.code || '')) return;
-          if (!event.code) return;
-          setDraft(current => ({ ...(current || DEFAULT_KEYS), [recording]: [event.code] }));
+          if (['Shift', 'Control', 'Meta', 'Alt', 'AltGraph', 'CapsLock', 'Fn'].includes(event.key)) return;
+          const binding = keyBinding(event);
+          if (!binding) return;
+          setDraft(current => ({ ...(current || DEFAULT_KEYS), [recording]: [binding] }));
           setRecording('');
           setStatus('');
         };
@@ -602,10 +686,10 @@ window.__ModuleLoader__.load({
       };
       const keys = draft || DEFAULT_KEYS;
 
-      return h('div', { style: { padding: '2px 0 6px', display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 } },
+      return h('div', { 'data-dsh-suggestions-settings': '', style: { padding: '16px 0', maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13 } },
         h('div', { style: { fontWeight: 600 } }, TEXT.title),
         h('div', { style: { opacity: 0.6, fontSize: 12 } }, TEXT.hint),
-        ROWS.map(([name, label, note]) => h('div', { key: name, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
+        ROWS.map(([name, label, note]) => h('div', { key: name, style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
           h('div', { style: { minWidth: 0 } },
             h('div', null, label),
             note ? h('div', { style: { opacity: 0.5, fontSize: 11 } }, note) : null),
@@ -620,8 +704,10 @@ window.__ModuleLoader__.load({
 
     return { inject: ['slots'], apply(ctx) {
       ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register({ name: 'conversation.input.overlay', id: 'dsh-suggestions', order: 30 }, SuggestionHint));
-      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({ name: 'settings.plugin.item', id: 'dsh-suggestions', key: 'dsh-suggestions', order: 40 }, SettingsCard));
-      ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-suggestions' }, SettingsCard));
+      const label = () => isChinese(ctx.locale?.getSnapshot?.().active) ? '输入框建议' : 'Composer suggestions';
+      const inject = () => ({ language: ctx.locale?.getSnapshot?.().active });
+      ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'dsh-suggestions', label, inject, order: 40 }, SettingsCard));
+      ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({ name: 'settings.plugins.tab', id: 'dsh-suggestions', label, inject, order: 40 }, SettingsCard));
     } };
   },
 });

@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "DSH-suggestions",
-    "description": "空输入框双击 Tab / → 生成建议，单击采纳，双击左 / 右 Alt 翻看；输入草稿后双击 Tab 或在文末双击 → 优化。按键可在插件设置里修改。"
+    "description": "空框双击 Tab / → 生成，单击采纳；Alt＋↓ / ↑ 或翻页按钮切换建议；有草稿时双击优化。"
   },
   "suggestion.label": "建议的后续提示词"
 }
