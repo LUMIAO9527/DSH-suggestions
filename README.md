@@ -7,13 +7,13 @@
 **Desktop**：在插件管理中从 GitHub 安装，填写：
 
 ```text
-github:LUMIAO9527/DSH-suggestions#v0.6.1
+github:LUMIAO9527/DSH-suggestions#v0.6.3
 ```
 
 **Web / CLI**：
 
 ```sh
-dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.1
+dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.3
 ```
 
 ## 使用
@@ -32,7 +32,7 @@ dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.1
 
 ## 按键设置
 
-在 DSH「设置 → 输入框建议」调整快捷键，也可从「设置 → 插件 → 输入框建议」进入。点“修改”后按下按键或组合键，再点“保存”。翻页组合键按一次执行；自定义单键连按两次执行。设置页可恢复默认按键。
+在 DSH「设置 → 输入框建议」调整快捷键，也可从「设置 → 内置插件 → 输入框建议」进入。点击要修改的快捷键，按下新按键或组合键，再点“保存更改”；录入时按 `Esc` 取消。翻页组合键按一次执行；自定义单键连按两次执行。设置页可恢复默认按键。
 
 ## 超时设置
 

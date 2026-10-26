@@ -5,6 +5,41 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 const source = readFileSync(new URL('./client.js', import.meta.url), 'utf8');
 
+await test('deferred settings labels and props use only declared client services', () => {
+  let plugin;
+  vm.runInNewContext(source, {
+    window: { __ModuleLoader__: { load(definition) { plugin = definition.factory(() => ({})); } } },
+    navigator: { language: 'en-US' },
+  });
+  const entries = [];
+  let active = 'zh';
+  const services = {
+    locale: { getSnapshot: () => ({ active }) },
+    slots: {
+      inject(_name, setup) { setup(); },
+      register(options) { entries.push(options); return () => {}; },
+    },
+  };
+  const ctx = new Proxy(services, {
+    get(target, key) {
+      if (key in target && !plugin.inject.includes(key)) throw new Error(`cannot get property "${key}" without inject`);
+      return target[key];
+    },
+  });
+  plugin.apply(ctx);
+  const settings = entries.filter(entry => entry.name.startsWith('settings.'));
+  assert.equal(settings.length, 2);
+  for (const entry of settings) {
+    assert.equal(entry.label(), '输入框建议');
+    assert.equal(entry.inject().language, 'zh');
+  }
+  active = 'en';
+  for (const entry of settings) {
+    assert.equal(entry.label(), 'Composer suggestions');
+    assert.equal(entry.inject().language, 'en');
+  }
+});
+
 function mount(initial = {}) {
   const state = { sessionId: 'own', input: { draft: '', phase: 'plain', attachmentIds: [], queue: [] }, session: { running: false, pendingSubmissions: [] }, turn: 1, suggestion: '把第二部分也核实，列出还没有依据的结论', hold: false,
     anchorBox: { left: 100, top: 200, width: 600, height: 1 }, nativeBox: { left: 114, top: 212, width: 578, height: 24 },

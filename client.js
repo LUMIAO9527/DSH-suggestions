@@ -603,62 +603,148 @@ window.__ModuleLoader__.load({
             browseButton(1, (isChinese() ? '下一条' : 'Next') + ' (' + keyLabel(keys.next[0]) + ')')) : null) : null);
     }
 
-    const CARD_BUTTON = { border: '1px solid currentColor', borderRadius: 6, background: 'transparent', color: 'inherit', padding: '2px 10px', fontSize: 12, cursor: 'pointer', opacity: 0.85 };
+    const SETTINGS_CSS = `
+      [data-dsh-suggestions-settings]{--sug-text:var(--dsw-alias-label-primary,inherit);--sug-muted:var(--dsw-alias-label-secondary,#999);--sug-border:var(--dsw-alias-border-l2,rgba(127,127,127,.22));--sug-accent:var(--dsw-alias-state-business-primary,#7da7ff);container:dsh-suggestion-settings / inline-size;width:100%;max-width:760px;padding:4px 0 24px;color:var(--sug-text);font:inherit;font-size:14px;line-height:1.5}
+      [data-dsh-suggestions-settings] *{box-sizing:border-box}
+      [data-dsh-suggestions-settings] .sug-heading{margin:0;font-size:20px;font-weight:600;line-height:1.4;letter-spacing:-.25px}
+      [data-dsh-suggestions-settings] .sug-description{margin:8px 0 28px;color:var(--sug-muted);font-size:13px;line-height:1.7}
+      [data-dsh-suggestions-settings] .sug-section-heading{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 16px;margin-bottom:12px}
+      [data-dsh-suggestions-settings] .sug-section-heading h3{margin:0;font-size:13px;font-weight:600}
+      [data-dsh-suggestions-settings] .sug-section-heading span{color:var(--sug-muted);font-size:12px}
+      [data-dsh-suggestions-settings] .sug-rows{border:1px solid var(--sug-border);border-radius:14px;overflow:hidden;background:color-mix(in srgb,currentColor 2%,transparent)}
+      [data-dsh-suggestions-settings] .sug-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:16px;padding:20px;min-height:88px}
+      [data-dsh-suggestions-settings] .sug-row+.sug-row{border-top:1px solid var(--sug-border)}
+      [data-dsh-suggestions-settings] .sug-row[data-recording=true]{background:color-mix(in srgb,var(--sug-accent) 7%,transparent)}
+      [data-dsh-suggestions-settings] .sug-row-title{font-weight:500;font-size:14px}
+      [data-dsh-suggestions-settings] .sug-row-note{margin-top:5px;color:var(--sug-muted);font-size:12px;line-height:1.6;max-width:34em}
+      [data-dsh-suggestions-settings] button{font-family:inherit;font-size:13px;line-height:1.4;touch-action:manipulation;cursor:pointer;transition:background .15s,border-color .15s,opacity .15s}
+      [data-dsh-suggestions-settings] button:disabled{cursor:default;opacity:.4}
+      [data-dsh-suggestions-settings] button:focus-visible{outline:2px solid var(--sug-accent);outline-offset:3px}
+      [data-dsh-suggestions-settings] .sug-key-button{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px;min-height:42px;max-width:270px;padding:7px 12px;border:1px solid var(--sug-border);border-radius:9px;background:var(--dsw-alias-bg-layer-2,transparent);color:inherit}
+      [data-dsh-suggestions-settings] .sug-key-button:hover:enabled{border-color:color-mix(in srgb,currentColor 40%,transparent);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}
+      [data-dsh-suggestions-settings] .sug-key-button[aria-pressed=true]{min-width:164px;border-color:var(--sug-accent);color:var(--sug-accent)}
+      [data-dsh-suggestions-settings] .sug-chord{display:inline-flex;align-items:center;gap:5px}
+      [data-dsh-suggestions-settings] kbd{font:inherit;font-size:12px;font-weight:500;min-width:22px;text-align:center;white-space:nowrap}
+      [data-dsh-suggestions-settings] .sug-key-separator{color:var(--sug-muted);font-size:11px}
+      [data-dsh-suggestions-settings] .sug-edit-icon{width:12px;height:12px;margin-left:2px;opacity:.45;flex:none}
+      [data-dsh-suggestions-settings] .sug-feedback{display:flex;align-items:center;gap:8px;min-height:42px;margin-top:8px;color:var(--sug-muted);font-size:12px}
+      [data-dsh-suggestions-settings] .sug-feedback[data-state=saved]{color:var(--dsw-alias-state-success-primary,#55ad7c)}
+      [data-dsh-suggestions-settings] .sug-feedback[data-state=error]{color:var(--dsw-alias-state-error-primary,#e57676)}
+      [data-dsh-suggestions-settings] .sug-retry{border:0;padding:3px 6px;background:transparent;color:inherit;text-decoration:underline;text-underline-offset:3px}
+      [data-dsh-suggestions-settings] .sug-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--sug-border);padding-top:18px}
+      [data-dsh-suggestions-settings] .sug-reset{min-height:38px;padding:8px 0;border:0;background:transparent;color:var(--sug-muted)}
+      [data-dsh-suggestions-settings] .sug-reset:hover:enabled{color:var(--sug-text)}
+      [data-dsh-suggestions-settings] .sug-save{min-height:38px;min-width:96px;padding:9px 18px;border:0;border-radius:9px;font-weight:500;background:var(--dsw-alias-label-primary,#eee);color:var(--dsw-alias-bg-layer-2,#242424)}
+      [data-dsh-suggestions-settings] .sug-save:hover:enabled{opacity:.85}
+      @container dsh-suggestion-settings (max-width:440px){
+        [data-dsh-suggestions-settings] .sug-row{grid-template-columns:minmax(0,1fr);gap:12px;padding:16px}
+        [data-dsh-suggestions-settings] .sug-key-button{justify-self:start;min-height:44px;max-width:100%}
+        [data-dsh-suggestions-settings] .sug-description{margin-bottom:22px}
+        [data-dsh-suggestions-settings] .sug-section-heading{display:block}
+        [data-dsh-suggestions-settings] .sug-section-heading span{display:block;margin-top:4px}
+      }
+      @media(prefers-reduced-motion:reduce){[data-dsh-suggestions-settings] button{transition:none}}
+    `;
 
-    // Shown inside Settings (and the Plugins page when the host serves the
-    // bundle form). The card only talks to the host route, so the composer and
-    // the form can never disagree about what is saved.
     function SettingsCard({ language } = {}) {
       const zh = isChinese(language);
       const TEXT = zh ? {
         title: '输入框建议',
-        hint: '点“修改”后按下按键或组合键。',
-        composer: '采纳 / 生成 / 优化',
-        composerNote: '单击采纳，双击生成或优化草稿',
-        next: '翻到下一条',
-        prev: '翻回上一条',
-        press: '按下按键…',
+        description: '推荐下一条消息，也可以优化输入的草稿。',
+        shortcuts: '快捷键',
+        hint: '点击快捷键修改',
+        composer: '采纳、生成与优化',
+        composerNote: ['有建议：按一次采纳。', '空输入框无建议：双击生成（需已有聊天记录）。', '有草稿：双击优化，→ 需在文末。'],
+        next: '下一条建议',
+        nextNote: '到末尾时生成新建议。',
+        prev: '上一条建议',
+        prevNote: '返回已生成的建议。',
+        press: '按下快捷键…',
+        cancel: '按下新快捷键，Esc 取消。',
         change: '修改',
-        save: '保存',
+        save: '保存更改',
+        saving: '保存中…',
         reset: '恢复默认',
-        saved: '已保存，立即生效',
+        saved: '已保存',
+        unsaved: '有未保存的更改',
+        loading: '正在读取快捷键…',
+        loadFailed: '快捷键读取失败',
+        retry: '重试',
         conflict: '两个动作不能用同一个键',
-        failed: '保存失败',
+        failed: '保存失败，请重试',
       } : {
         title: 'Composer suggestions',
-        hint: 'Click Change, then press a key or key combination.',
-        composer: 'Accept / generate / optimize',
-        composerNote: 'Press once to accept, twice to generate or improve the draft',
-        next: 'Browse forward',
-        prev: 'Browse back',
-        press: 'Press a key…',
+        description: 'Get a follow-up suggestion or improve your draft.',
+        shortcuts: 'Keyboard shortcuts',
+        hint: 'Click a shortcut to change it',
+        composer: 'Accept, generate & improve',
+        composerNote: ['Suggestion visible: press once to accept.', 'Empty composer, no suggestion: press twice to generate from the chat history.', 'Draft entered: press twice to improve; Right must be at the end.'],
+        next: 'Next suggestion',
+        nextNote: 'Generate a new suggestion at the end of the list.',
+        prev: 'Previous suggestion',
+        prevNote: 'Go back to a generated suggestion.',
+        press: 'Press a shortcut…',
+        cancel: 'Press a new shortcut, or Esc to cancel.',
         change: 'Change',
-        save: 'Save',
+        save: 'Save changes',
+        saving: 'Saving…',
         reset: 'Reset',
-        saved: 'Saved and applied',
+        saved: 'Saved',
+        unsaved: 'Unsaved changes',
+        loading: 'Loading shortcuts…',
+        loadFailed: 'Could not load shortcuts',
+        retry: 'Retry',
         conflict: 'Two actions cannot share a key',
-        failed: 'Save failed',
+        failed: 'Could not save. Try again.',
       };
-      const ROWS = [['composer', TEXT.composer, TEXT.composerNote], ['next', TEXT.next, ''], ['prev', TEXT.prev, '']];
+      const ROWS = [['composer', TEXT.composer, TEXT.composerNote], ['next', TEXT.next, TEXT.nextNote], ['prev', TEXT.prev, TEXT.prevNote]];
       const [draft, setDraft] = useState(null);
+      const [savedKeys, setSavedKeys] = useState(null);
+      const [loading, setLoading] = useState(true);
       const [recording, setRecording] = useState('');
       const [status, setStatus] = useState('');
       const [busy, setBusy] = useState(false);
+      const draftRef = useRef(draft);
+      const savedRef = useRef(savedKeys);
+      draftRef.current = draft;
+      savedRef.current = savedKeys;
+
+      const load = useCallback(async signal => {
+        setLoading(true); setStatus('');
+        try {
+          const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config' }), signal });
+          const payload = await response.json();
+          if (!response.ok || !payload?.ok || !payload.value?.keys) throw new Error('config unavailable');
+          if (!signal?.aborted) { setDraft(payload.value.keys); setSavedKeys(payload.value.keys); }
+        } catch {
+          if (!signal?.aborted) setStatus('loadFailed');
+        } finally { if (!signal?.aborted) setLoading(false); }
+      }, []);
 
       useEffect(() => {
-        let cancelled = false;
-        fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config' }) })
-          .then(response => response.ok ? response.json() : null)
-          .then(payload => { if (!cancelled && payload?.ok && payload.value?.keys) setDraft(payload.value.keys); })
-          .catch(() => {});
-        return () => { cancelled = true; };
+        const controller = new AbortController();
+        load(controller.signal);
+        return () => controller.abort();
+      }, [load]);
+
+      useEffect(() => {
+        const updated = event => {
+          const next = event.detail;
+          if (!next?.composer || !next?.next || !next?.prev) return;
+          if (JSON.stringify(draftRef.current) === JSON.stringify(savedRef.current)) setDraft(next);
+          setSavedKeys(next);
+        };
+        window.addEventListener(KEYS_EVENT, updated);
+        return () => window.removeEventListener(KEYS_EVENT, updated);
       }, []);
 
       useEffect(() => {
         if (!recording) return undefined;
         const onKey = event => {
           event.preventDefault(); event.stopPropagation();
+          event.stopImmediatePropagation?.();
           if (event.key === 'Escape') { setRecording(''); return; }
+          if (event.isComposing || event.repeat) return;
           if (['Shift', 'Control', 'Meta', 'Alt', 'AltGraph', 'CapsLock', 'Fn'].includes(event.key)) return;
           const binding = keyBinding(event);
           if (!binding) return;
@@ -672,37 +758,57 @@ window.__ModuleLoader__.load({
 
       const conflicts = keys => keys.composer.includes(keys.next[0]) || keys.composer.includes(keys.prev[0]) || keys.next[0] === keys.prev[0];
       const save = async next => {
-        if (conflicts(next)) { setStatus(TEXT.conflict); return; }
+        if (conflicts(next)) { setStatus('conflict'); return; }
         setBusy(true); setStatus('');
         try {
           const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config', keys: next }) });
           const payload = await response.json();
-          if (!payload?.ok) throw new Error(payload?.error?.message || TEXT.failed);
+          if (!response.ok || !payload?.ok) throw new Error('save failed');
           setDraft(payload.value.keys);
+          setSavedKeys(payload.value.keys);
           window.dispatchEvent(new CustomEvent(KEYS_EVENT, { detail: payload.value.keys }));
-          setStatus(TEXT.saved);
-        } catch (error) { setStatus(String(error?.message || TEXT.failed)); }
+          setStatus('saved');
+        } catch { setStatus('failed'); }
         finally { setBusy(false); }
       };
       const keys = draft || DEFAULT_KEYS;
+      const dirty = savedKeys !== null && JSON.stringify(keys) !== JSON.stringify(savedKeys);
+      const error = ['loadFailed', 'failed', 'conflict'].includes(status);
+      const message = loading ? TEXT.loading : status ? TEXT[status] : dirty ? TEXT.unsaved : '';
+      const disabled = loading || busy || savedKeys === null;
+      const shortcut = (name, label) => {
+        const chords = keys[name].map((binding, index) => h('span', { className: 'sug-chord', key: binding },
+          index > 0 ? h('span', { className: 'sug-key-separator', 'aria-hidden': true }, '/') : null,
+          keyLabel(binding).split('＋').flatMap((part, i) => [
+            i > 0 ? h('span', { key: `${i}+`, className: 'sug-key-separator', 'aria-hidden': true }, '+') : null,
+            h('kbd', { key: i }, part),
+          ])));
+        return h('button', {
+          type: 'button', className: 'sug-key-button', disabled,
+          'aria-label': `${TEXT.change} ${label}`, 'aria-pressed': recording === name,
+          'aria-description': recording === name ? TEXT.cancel : keys[name].map(keyLabel).join(' / '),
+          onClick: () => { setRecording(recording === name ? '' : name); setStatus(''); },
+        }, recording === name ? TEXT.press : chords,
+        recording !== name ? h('svg', { className: 'sug-edit-icon', viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, 'aria-hidden': true }, h('path', { d: 'm10.5 3 2.5 2.5M3 10.5 10.5 3a1.8 1.8 0 0 1 2.5 2.5L5.5 13H3z' })) : null);
+      };
 
-      return h('div', { 'data-dsh-suggestions-settings': '', style: { padding: '16px 0', maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13 } },
-        h('div', { style: { fontWeight: 600 } }, TEXT.title),
-        h('div', { style: { opacity: 0.6, fontSize: 12 } }, TEXT.hint),
-        ROWS.map(([name, label, note]) => h('div', { key: name, style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
-          h('div', { style: { minWidth: 0 } },
-            h('div', null, label),
-            note ? h('div', { style: { opacity: 0.5, fontSize: 11 } }, note) : null),
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flex: 'none' } },
-            h('code', { style: { fontFamily: 'inherit', fontSize: 12, padding: '2px 8px', borderRadius: 4, border: '1px solid rgba(127,127,127,0.35)' } }, keys[name].map(keyLabel).join(' / ')),
-            h('button', { type: 'button', onClick: () => { setRecording(recording === name ? '' : name); setStatus(''); }, style: CARD_BUTTON }, recording === name ? TEXT.press : TEXT.change)))),
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 } },
-          h('button', { type: 'button', disabled: busy, onClick: () => save(keys), style: CARD_BUTTON }, TEXT.save),
-          h('button', { type: 'button', disabled: busy, onClick: () => save(DEFAULT_KEYS), style: CARD_BUTTON }, TEXT.reset),
-          status ? h('span', { style: { opacity: 0.65, fontSize: 12 } }, status) : null));
+      return h('section', { 'data-dsh-suggestions-settings': '', 'aria-label': TEXT.title },
+        h('style', null, SETTINGS_CSS),
+        h('h2', { className: 'sug-heading' }, TEXT.title),
+        h('p', { className: 'sug-description' }, TEXT.description),
+        h('div', { className: 'sug-section-heading' }, h('h3', null, TEXT.shortcuts), h('span', null, TEXT.hint)),
+        h('div', { className: 'sug-rows' }, ROWS.map(([name, label, note]) => h('div', { key: name, className: 'sug-row', 'data-recording': recording === name },
+          h('div', null, h('div', { className: 'sug-row-title' }, label), h('div', { className: 'sug-row-note' }, recording === name ? TEXT.cancel : Array.isArray(note) ? note.map(line => h('div', { key: line }, line)) : note)),
+          shortcut(name, label)))),
+        h('div', { className: 'sug-feedback', 'data-state': error ? 'error' : status, role: error ? 'alert' : 'status', 'aria-live': 'polite' },
+          h('span', null, message),
+          status === 'loadFailed' ? h('button', { type: 'button', className: 'sug-retry', onClick: () => load() }, TEXT.retry) : null),
+        h('div', { className: 'sug-footer' },
+          h('button', { type: 'button', className: 'sug-reset', disabled: disabled || Boolean(recording) || JSON.stringify(keys) === JSON.stringify(DEFAULT_KEYS), onClick: () => save(DEFAULT_KEYS) }, TEXT.reset),
+          h('button', { type: 'button', className: 'sug-save', disabled: disabled || !dirty || Boolean(recording), onClick: () => save(keys) }, busy ? TEXT.saving : TEXT.save)));
     }
 
-    return { inject: ['slots'], apply(ctx) {
+    return { inject: ['slots', 'locale'], apply(ctx) {
       ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register({ name: 'conversation.input.overlay', id: 'dsh-suggestions', order: 30 }, SuggestionHint));
       const label = () => isChinese(ctx.locale?.getSnapshot?.().active) ? '输入框建议' : 'Composer suggestions';
       const inject = () => ({ language: ctx.locale?.getSnapshot?.().active });
