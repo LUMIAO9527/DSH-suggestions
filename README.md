@@ -7,13 +7,13 @@
 **Desktop**：在插件管理中从 GitHub 安装，填写：
 
 ```text
-github:LUMIAO9527/DSH-suggestions#v0.6.6
+github:LUMIAO9527/DSH-suggestions#v0.7.0
 ```
 
 **Web / CLI**：
 
 ```sh
-dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.6
+dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.7.0
 ```
 
 ## 使用
@@ -23,7 +23,7 @@ dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.6
 | 显示建议 | 回答完成后，在空输入框中显示一条下一条消息的建议 | 自动出现 |
 | 采纳建议 | 把建议填进草稿，可继续编辑后再发送 | `Tab` 或 `→` |
 | 关闭建议 | 隐藏当前这条建议 | `Esc` |
-| 翻看建议 | 浏览当前回答的候选，末尾再往下会请求一条新候选 | `Alt＋↓` 下一条，`Alt＋↑` 上一条；也可点页码两侧的按钮 |
+| 翻看建议 | 先显示本轮已准备的不同候选，用完后生成其他建议 | `Alt＋↓` 下一条，`Alt＋↑` 上一条；也可点页码两侧的按钮 |
 | 主动生成 | 没有显示建议时，根据当前会话生成一条 | 双击 `Tab` 或双击 `→` |
 | 草稿优化 | 改写已输入的草稿，保留其中的约束、数字和路径 | 双击 `Tab`，或在文末双击 `→` |
 | MCP 工具 | 供其他客户端调用建议生成与草稿优化 | 见 [MCP 说明](mcp/README.md) |
@@ -44,10 +44,10 @@ dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.6
 - id: dsh-suggestions
   config:
     timeoutMs: 25000
-    noveltyTimeoutMs: 10000
+    noveltyTimeoutMs: 3000
 ```
 
-`timeoutMs` 管生成建议本身，`noveltyTimeoutMs` 只管生成后那次重复核对。核对超时或失败时会保留已生成的候选，不会让整次生成失败。
+`timeoutMs` 控制生成建议的超时，`noveltyTimeoutMs` 控制候选筛选的超时。筛选超时或失败时保留已生成的候选。
 
 ## MCP 接入
 

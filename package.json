@@ -1,6 +1,6 @@
 {
   "name": "dsh-suggestions",
-  "version": "0.6.6",
+  "version": "0.7.0",
   "private": true,
   "description": "为 DeepSeek Harness 提供后续提示词建议和草稿优化。",
   "type": "module",
@@ -17,6 +17,7 @@
     "index.js",
     "client.js",
     "prompt-core.mjs",
+    "suggestion-engine.mjs",
     "version.mjs",
     "cordis.patch.yml",
     "locale/en.json",

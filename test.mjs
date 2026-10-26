@@ -6,7 +6,8 @@ import { dirname, resolve, join, sep } from 'node:path';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { apply, summarize, normalizeKeys } from './index.js';
-import { LIMITS, NOVELTY_SYSTEM, contextExcerpt, validateTurns, suggestionInput, parseSuggestion, parseNovelty, parseRewrite, optimizeMaxTokens } from './prompt-core.mjs';
+import { LIMITS, NOVELTY_SYSTEM, contextExcerpt, validateTurns, suggestionInput, parseSuggestion, parseSuggestionBatch, parseNovelty, parseNoveltySelection, parseRewrite, optimizeMaxTokens } from './prompt-core.mjs';
+import { generateSuggestions } from './suggestion-engine.mjs';
 
 const scratch = resolve(dirname(fileURLToPath(import.meta.url)), './_wip/tests');
 mkdirSync(scratch, { recursive: true });
@@ -42,7 +43,8 @@ function harness(options = {}) {
         if (state.hold) await new Promise((resolve, reject) => { request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }); state.release = resolve; });
         if (request.system === NOVELTY_SYSTEM && state.noveltyHold) await new Promise((resolve, reject) => { request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }); });
         if (state.error) throw new Error(state.error);
-        yield { type: 'text-delta', text: request.system === NOVELTY_SYSTEM ? state.novelty || '{"duplicate":false}' : state.text };
+        const input = JSON.parse(request.messages[0].content[0].text);
+        yield { type: 'text-delta', text: request.system === NOVELTY_SYSTEM ? state.novelty || JSON.stringify({ keep: input.candidates.map((_, index) => index) }) : state.text };
         if (state.finish) yield { type: 'finish', reason: { kind: state.finish } };
       },
     },
@@ -70,10 +72,90 @@ try {
       const previousSuggestions = ['继续讲公式。'];
       assert.equal((await h.api({ sessionId: 'own', manual: true, previousSuggestions })).value.status, 'none');
       assert.equal(h.calls[1].system, NOVELTY_SYSTEM);
-      assert.deepEqual(JSON.parse(h.calls[1].messages[0].content[0].text), { candidate: '现在讲公式吧。', previousSuggestions });
+      const review = JSON.parse(h.calls[1].messages[0].content[0].text);
+      assert.deepEqual(review.candidates, ['现在讲公式吧。']); assert.deepEqual(review.previousSuggestions, previousSuggestions);
+      assert.match(review.conversation.userRequest, /只分析/);
+      assert.equal(review.conversation.requestMode, 'alternative');
+      assert.equal(h.calls.length, 4); // One rejected manual batch gets one fresh attempt.
       h.state.text = '["比较两种公式各自的适用条件。"]'; h.state.novelty = '{"duplicate":false}';
       assert.equal((await h.api({ sessionId: 'own', manual: true, previousSuggestions })).value.status, 'ready');
     } finally { h.close(); }
+  });
+
+  await test('ranked candidates fill a same-turn pool and alternate requests consume it without model calls', async () => {
+    const candidates = ['把第二部分也核实，列出还没有依据的结论', '这两部分的结论有什么联系？', '哪些现象能用来区分这两种原因？'];
+    const h = harness({ text: JSON.stringify({ state: 'ready', suggestions: candidates }) });
+    try {
+      const first = (await h.api({ sessionId: 'own' })).value;
+      assert.deepEqual(first.suggestions, [candidates[0]]); const count = h.calls.length;
+      assert.equal(count, 1); // Automatic suggestions are prepared in one model call.
+      const second = (await h.api({ sessionId: 'own', manual: true, previousSuggestions: [candidates[0]] })).value;
+      assert.deepEqual(second.suggestions, [candidates[1]]);
+      const third = (await h.api({ sessionId: 'own', manual: true, previousSuggestions: candidates.slice(0, 2) })).value;
+      assert.deepEqual(third.suggestions, [candidates[2]]); assert.equal(h.calls.length, count);
+      assert.deepEqual((await h.api({ sessionId: 'own' })).value.suggestions, third.suggestions);
+      h.state.events.push({ type: 'turn/start', seq: 6, data: { turn: 2 } });
+      assert.equal((await h.api({ sessionId: 'own', manual: true, previousSuggestions: candidates })).value.status, 'running');
+    } finally { h.close(); }
+  });
+
+  await test('one invalid or repeated batch entry does not discard valid candidates', () => {
+    const source = { userRequest: '检查 report.md。', assistantAnswer: '已检查 report.md，仍需解释两项结论。', previousSuggestions: ['解释第二项结论。'] };
+    const raw = JSON.stringify({ state: 'ready', suggestions: ['修改 invented.py 的参数。', '解释第二项结论。', '这两项结论之间有什么关系？'] });
+    assert.deepEqual(parseSuggestionBatch(raw, source).suggestions, ['这两项结论之间有什么关系？']);
+    assert.equal(parseSuggestion(raw, source), '这两项结论之间有什么关系？');
+    const annotated = JSON.stringify({ state: 'ready', suggestions: ['这两项结论之间有什么关系？'], reasoning: 'A short model annotation is metadata, not the displayed suggestion.' });
+    assert.equal(parseSuggestion(annotated, source), '这两项结论之间有什么关系？');
+    assert.throws(() => parseSuggestionBatch('{"state":"ready","suggestions":[],"reasoning":{"unexpected":true}}'));
+    for (const raw of ['{"state":"ready","suggestions":"bad"}', '{"state":"waiting","suggestions":["继续分析第二项"]}', '{"state":"ready","suggestions":["解释第一项","解释第二项","解释第三项","解释第四项"]}']) assert.throws(() => parseSuggestionBatch(raw));
+    assert.deepEqual(parseNoveltySelection('{"keep":[2,0]}', 3), [2, 0]);
+    for (const raw of ['{"keep":[3]}', '{"keep":[0,0]}', '{"keep":["0"]}', '{"keep":[0],"other":true}']) assert.throws(() => parseNoveltySelection(raw, 3));
+  });
+
+  await test('a rejected manual batch retries a different intent and returns a surviving candidate', async () => {
+    const requests = [];
+    const replies = [
+      '{"state":"ready","suggestions":["继续解释公式。"]}', '{"keep":[]}',
+      '{"state":"ready","suggestions":["公式在什么条件下不适用？","这些变量应当用什么单位？"]}', '{"keep":[1]}',
+    ];
+    const value = await generateSuggestions(async request => { requests.push(request); return replies.shift(); }, { userRequest: '解释这个公式。', assistantAnswer: '已说明变量含义。', previousSuggestions: ['再讲一下公式。'] }, { manual: true });
+    assert.equal(value.suggestion, '这些变量应当用什么单位？'); assert.equal(requests.length, 4);
+    const retried = JSON.parse(requests[2].input);
+    assert.equal(retried.requestMode, 'alternative'); assert.deepEqual(retried.rejectedSuggestions, ['继续解释公式。']); assert.ok(retried.generationFeedback);
+  });
+
+  await test('manual generation respects genuine waiting and completion instead of forcing a retry', async () => {
+    for (const state of ['waiting', 'complete']) {
+      let calls = 0;
+      const result = await generateSuggestions(async () => { calls++; return JSON.stringify({ state, suggestions: [] }); }, { assistantAnswer: '请提供缺失的附件。' }, { manual: true });
+      assert.equal(result.suggestion, ''); assert.equal(calls, 1);
+    }
+  });
+
+  await test('every assistant segment in a completed turn is retained within the context limit', () => {
+    const log = events();
+    log.splice(-1, 0, { type: 'assistant/message', seq: 4.5, data: { message: { content: '最后补充：尚缺复现条件。' } } });
+    const summary = summarize(log);
+    assert.match(summary.lastAssistantText, /第二部分仍未核实/); assert.match(summary.lastAssistantText, /尚缺复现条件/);
+    log.splice(-1, 0, { type: 'assistant/message', seq: 4.6, data: { message: { content: '长'.repeat(50000) + '最后的结果。' } } });
+    const bounded = summarize(log).lastAssistantText; assert.ok(bounded.length <= LIMITS.answer); assert.match(bounded, /最后的结果/);
+  });
+
+  await test('cancelling during diversity review cannot return or cache a stale suggestion', async () => {
+    const controller = new AbortController();
+    await assert.rejects(generateSuggestions(async request => {
+      if (request.system === NOVELTY_SYSTEM) { controller.abort(new Error('the user sent a message')); return '{"keep":[0]}'; }
+      return '{"state":"ready","suggestions":["解释第二项的依据。"]}';
+    }, { previousSuggestions: ['核对第一项的依据。'] }, { manual: true, signal: controller.signal }), /user sent/);
+  });
+
+  await test('failed batch review keeps only the leading candidate and never caches unreviewed alternatives', async () => {
+    const candidates = ['先解释第一项的依据。', '比较第二项的适用条件。'];
+    const result = await generateSuggestions(async request => {
+      if (request.system === NOVELTY_SYSTEM) throw new Error('review unavailable');
+      return JSON.stringify({ state: 'ready', suggestions: candidates });
+    }, { assistantAnswer: '已经列出两项待说明的结论。', previousSuggestions: ['检查这两项的相关性。'] }, { manual: true });
+    assert.equal(result.suggestion, candidates[0]); assert.deepEqual(result.candidates, candidates.slice(0, 1));
   });
 
   await test('a malformed duplicate review keeps the candidate instead of failing the request', async () => {
@@ -295,6 +377,18 @@ try {
       assert.equal(manual.value.status, 'ready'); assert.equal(h.calls.length, 2);
       assert.deepEqual((await h.api({ sessionId: 'own' })).value.suggestions, manual.value.suggestions);
       assert.equal(h.calls.length, 2);
+    } finally { h.close(); }
+  });
+
+  await test('a manual request has its own mode even while an automatic request is in flight', async () => {
+    const h = harness({ hold: true });
+    try {
+      const automatic = h.api({ sessionId: 'own' }); await until(() => h.calls.length === 1); const releaseAuto = h.state.release;
+      const manual = h.api({ sessionId: 'own', manual: true }); await until(() => h.calls.length === 2); const releaseManual = h.state.release;
+      assert.equal(JSON.parse(h.calls[0].messages[0].content[0].text).requestMode, 'automatic');
+      assert.equal(JSON.parse(h.calls[1].messages[0].content[0].text).requestMode, 'alternative');
+      releaseAuto(); releaseManual();
+      assert.equal((await automatic).value.status, 'ready'); assert.equal((await manual).value.status, 'ready');
     } finally { h.close(); }
   });
 

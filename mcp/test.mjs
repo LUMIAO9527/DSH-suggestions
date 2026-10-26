@@ -108,6 +108,8 @@ try {
       assert.match((await tool(c, 'suggest_next_prompt', args)).result.content[0].text, /剩下/);
       content = '[]';
       assert.deepEqual((await tool(c, 'suggest_next_prompt', args)).result, { content: [], structuredContent: { status: 'none' } });
+      content = '{"state":"ready","suggestions":["继续核对剩余原因。","解释一下各项原因之间的联系。"],"reasoning":"not user-facing"}';
+      assert.equal((await tool(c, 'suggest_next_prompt', args)).result.content[0].text, '继续核对剩余原因。');
       content = '{"state":"ready","suggestion":"把剩下的原因也查清，列出还没确认的部分"}';
       assert.match((await tool(c, 'suggest_next_prompt', { ...args, recentTurns: [{ user: '查清全部原因', assistant: '第一部分已经查完。' }] })).result.content[0].text, /剩下/);
       assert.equal(JSON.parse(m.requests.at(-1).messages[1].content).recentTurns[0].assistant, '第一部分已经查完。');
