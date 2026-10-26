@@ -143,6 +143,9 @@ export function apply(ctx, config = {}, runtime = {}) {
   const bridgeFile = runtime.bridgeFile || BRIDGE_FILE;
   const configFile = runtime.configFile || CONFIG_PATH;
   const timeoutMs = Number.isInteger(config.timeoutMs) ? Math.min(45000, Math.max(1000, config.timeoutMs)) : 30000;
+  // The duplicate review is an optional second call; it gets its own deadline so
+  // it can never eat into the time the suggestion itself was given.
+  const noveltyTimeoutMs = Number.isInteger(config.noveltyTimeoutMs) ? Math.min(30000, Math.max(100, config.noveltyTimeoutMs)) : 10000;
   const diag = message => { if (config.debug === true) ctx.logger?.info?.(`dsh-suggestions: ${message}`); };
   const cache = new Map();
   const inFlight = new Map();
@@ -260,12 +263,26 @@ export function apply(ctx, config = {}, runtime = {}) {
     const timeout = setTimeout(() => controller.abort(new Error('suggestion request timed out')), timeoutMs);
     try {
       const raw = await complete({ system: SUGGEST_SYSTEM, input: suggestionInput(source), sessionId: body.sessionId, route, signal: controller.signal, temperature: 0.2 });
-      let suggestion = parseSuggestion(raw, source);
-      if (suggestion && source.previousSuggestions.length) {
-        const judgement = await complete({ system: NOVELTY_SYSTEM, input: JSON.stringify({ candidate: suggestion, previousSuggestions: source.previousSuggestions }), sessionId: body.sessionId, route, signal: controller.signal, maxTokens: 160, temperature: 0 });
-        if (!parseNovelty(judgement)) suggestion = '';
+      const suggestion = parseSuggestion(raw, source);
+      if (!suggestion || !source.previousSuggestions.length) return { suggestion };
+      // The duplicate review only improves the candidate. Its own failure or
+      // deadline keeps the suggestion instead of costing the user a request
+      // that already came back.
+      const review = new AbortController();
+      const cancelReview = () => review.abort(signal?.reason);
+      if (signal?.aborted) review.abort(signal?.reason);
+      signal?.addEventListener('abort', cancelReview, { once: true });
+      const reviewTimer = setTimeout(() => review.abort(new Error('duplicate review timed out')), noveltyTimeoutMs);
+      try {
+        const judgement = await complete({ system: NOVELTY_SYSTEM, input: JSON.stringify({ candidate: suggestion, previousSuggestions: source.previousSuggestions }), sessionId: body.sessionId, route, signal: review.signal, maxTokens: 160, temperature: 0 });
+        return { suggestion: parseNovelty(judgement) ? suggestion : '' };
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        return { suggestion };
+      } finally {
+        clearTimeout(reviewTimer);
+        signal?.removeEventListener('abort', cancelReview);
       }
-      return { suggestion };
     } finally { clearTimeout(timeout); signal?.removeEventListener('abort', cancel); }
   }
 

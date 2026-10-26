@@ -40,6 +40,7 @@ function harness(options = {}) {
       async *stream(request) {
         calls.push(request);
         if (state.hold) await new Promise((resolve, reject) => { request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }); state.release = resolve; });
+        if (request.system === NOVELTY_SYSTEM && state.noveltyHold) await new Promise((resolve, reject) => { request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }); });
         if (state.error) throw new Error(state.error);
         yield { type: 'text-delta', text: request.system === NOVELTY_SYSTEM ? state.novelty || '{"duplicate":false}' : state.text };
         if (state.finish) yield { type: 'finish', reason: { kind: state.finish } };
@@ -49,7 +50,7 @@ function harness(options = {}) {
     webServer: { getOrigin: () => 'http://127.0.0.1:1', register(definition) { bridge = definition.handler; return () => {}; } },
   };
   const ctx = { get: name => services[name], inject(_names, callback) { callback(ctx); }, effect(fn) { const cleanup = fn(); effects.push(cleanup); return cleanup; }, logger: { info() {} } };
-  apply(ctx, { timeoutMs: 1000 }, { bridgeFile: file, configFile: file + '.keys' });
+  apply(ctx, { timeoutMs: 1000, ...(options.config || {}) }, { bridgeFile: file, configFile: file + '.keys' });
   const api = async (body, signal) => (await composer.fetch({ json: async () => body, signal })).json();
   const bridgeCall = async body => {
     const token = JSON.parse(readFileSync(file, 'utf8')).token;
@@ -75,13 +76,26 @@ try {
     } finally { h.close(); }
   });
 
-  await test('malformed novelty decisions cannot publish an unreviewed candidate', async () => {
+  await test('a malformed duplicate review keeps the candidate instead of failing the request', async () => {
     const h = harness({ novelty: 'not JSON' });
     try {
-      assert.equal((await h.api({ sessionId: 'own', manual: true, previousSuggestions: ['请继续解释第二部分。'] })).value.status, 'error');
+      const value = (await h.api({ sessionId: 'own', manual: true, previousSuggestions: ['请继续解释第二部分。'] })).value;
+      assert.equal(value.status, 'ready');
+      assert.deepEqual(value.suggestions, ['把第二部分也核实，列出还没有依据的结论']);
       assert.equal(parseNovelty('{"duplicate":true}'), false);
       assert.equal(parseNovelty('{"duplicate":false}'), true);
       for (const value of ['{}', '{"duplicate":"false"}', '{"duplicate":false,"extra":true}']) assert.throws(() => parseNovelty(value));
+    } finally { h.close(); }
+  });
+
+  await test('a duplicate review timeout keeps the candidate and never spends the suggestion deadline', async () => {
+    const h = harness({ noveltyHold: true, config: { noveltyTimeoutMs: 100 } });
+    try {
+      const started = Date.now();
+      const value = (await h.api({ sessionId: 'own', manual: true, previousSuggestions: ['请继续解释第二部分。'] })).value;
+      assert.equal(value.status, 'ready');
+      assert.deepEqual(value.suggestions, ['把第二部分也核实，列出还没有依据的结论']);
+      assert.ok(Date.now() - started < 900, 'the review deadline is independent of the 1s suggestion deadline');
     } finally { h.close(); }
   });
   await test('new candidates include offered choices and duplicate output leaves the cached choice usable', async () => {

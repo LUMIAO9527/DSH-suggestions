@@ -42,7 +42,10 @@ dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.1
 - id: dsh-suggestions
   config:
     timeoutMs: 25000
+    noveltyTimeoutMs: 10000
 ```
+
+`timeoutMs` 管生成建议本身，`noveltyTimeoutMs` 只管生成后那次重复核对。核对超时或失败时会保留已生成的候选，不会让整次生成失败。
 
 ## MCP 接入
 
