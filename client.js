@@ -144,6 +144,7 @@ window.__ModuleLoader__.load({
         .filter(([flag, name]) => event[flag] && !code.startsWith(name)).map(([, name]) => name);
       return [...modifiers, code].join('+');
     }
+    const RECORDABLE_CODE = /^(?:Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Numpad(?:[0-9]|Add|Subtract|Multiply|Divide|Decimal|Enter|Equal|Comma)|Arrow(?:Right|Left|Up|Down)|Alt(?:Left|Right)|Tab|Enter|Escape|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)$/;
     const normalizeCandidate = text => text.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
 
     class CandidateDeck {
@@ -632,12 +633,12 @@ window.__ModuleLoader__.load({
       [data-dsh-suggestions-settings]{--sug-text:var(--dsw-alias-label-primary,inherit);--sug-muted:var(--dsw-alias-label-secondary,#999);--sug-border:var(--dsw-alias-border-l2,rgba(127,127,127,.22));--sug-accent:var(--dsw-alias-state-business-primary,#7da7ff);container:dsh-suggestion-settings / inline-size;width:100%;max-width:760px;padding:4px 0 24px;color:var(--sug-text);font:inherit;font-size:14px;line-height:1.5}
       [data-dsh-suggestions-settings] *{box-sizing:border-box}
       [data-dsh-suggestions-settings] .sug-heading{margin:0;font-size:20px;font-weight:600;line-height:1.4;letter-spacing:-.25px}
-      [data-dsh-suggestions-settings] .sug-description{margin:8px 0 28px;color:var(--sug-muted);font-size:13px;line-height:1.7}
+      [data-dsh-suggestions-settings] .sug-description{margin:8px 0 22px;color:var(--sug-muted);font-size:13px;line-height:1.7}
       [data-dsh-suggestions-settings] .sug-section-heading{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 16px;margin-bottom:12px}
       [data-dsh-suggestions-settings] .sug-section-heading h3{margin:0;font-size:13px;font-weight:600}
       [data-dsh-suggestions-settings] .sug-section-heading span{color:var(--sug-muted);font-size:12px}
       [data-dsh-suggestions-settings] .sug-rows{border:1px solid var(--sug-border);border-radius:14px;overflow:hidden;background:color-mix(in srgb,currentColor 2%,transparent)}
-      [data-dsh-suggestions-settings] .sug-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:16px;padding:20px;min-height:88px}
+      [data-dsh-suggestions-settings] .sug-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:16px 18px;min-height:76px}
       [data-dsh-suggestions-settings] .sug-row+.sug-row{border-top:1px solid var(--sug-border)}
       [data-dsh-suggestions-settings] .sug-row[data-recording=true]{background:color-mix(in srgb,var(--sug-accent) 7%,transparent)}
       [data-dsh-suggestions-settings] .sug-row-title{font-weight:500;font-size:14px}
@@ -645,24 +646,28 @@ window.__ModuleLoader__.load({
       [data-dsh-suggestions-settings] button{font-family:inherit;font-size:13px;line-height:1.4;touch-action:manipulation;cursor:pointer;transition:background .15s,border-color .15s,opacity .15s}
       [data-dsh-suggestions-settings] button:disabled{cursor:default;opacity:.4}
       [data-dsh-suggestions-settings] button:focus-visible{outline:2px solid var(--sug-accent);outline-offset:3px}
-      [data-dsh-suggestions-settings] .sug-controls{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;max-width:310px}
-      [data-dsh-suggestions-settings] .sug-key-list{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
-      [data-dsh-suggestions-settings] .sug-key-option{display:inline-flex;align-items:stretch;border:1px solid var(--sug-border);border-radius:9px;background:var(--dsw-alias-bg-layer-2,transparent)}
-      [data-dsh-suggestions-settings] .sug-key-button{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:5px;min-height:42px;max-width:230px;padding:7px 10px;border:0;border-radius:8px;background:transparent;color:inherit}
-      [data-dsh-suggestions-settings] .sug-key-button:hover:enabled{border-color:color-mix(in srgb,currentColor 40%,transparent);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}
-      [data-dsh-suggestions-settings] .sug-key-button[aria-pressed=true]{min-width:164px;border-color:var(--sug-accent);color:var(--sug-accent)}
-      [data-dsh-suggestions-settings] .sug-trigger{min-height:42px;max-width:100%;padding:7px 8px;border:1px solid var(--sug-border);border-radius:9px;background:var(--dsw-alias-bg-layer-2,#292929);color:inherit;font:inherit;font-size:12px;cursor:pointer}
-      [data-dsh-suggestions-settings] .sug-trigger:disabled{opacity:.4}
-      [data-dsh-suggestions-settings] .sug-remove{align-self:stretch;min-width:24px;padding:0 5px;border:0;border-radius:0 8px 8px 0;background:transparent;color:var(--sug-muted);font-size:16px}
-      [data-dsh-suggestions-settings] .sug-add{min-width:32px;min-height:42px;padding:6px;border:0;border-radius:8px;background:transparent;color:var(--sug-muted);font-size:20px}
-      [data-dsh-suggestions-settings] .sug-remove:hover:enabled,[data-dsh-suggestions-settings] .sug-add:hover:enabled{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1));color:var(--sug-text)}
+      [data-dsh-suggestions-settings] .sug-controls{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;max-width:330px}
+      [data-dsh-suggestions-settings] .sug-summary{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px;min-width:0;max-width:210px;color:var(--sug-muted)}
+      [data-dsh-suggestions-settings] .sug-summary[data-recording=true]{color:var(--sug-accent)}
+      [data-dsh-suggestions-settings] .sug-summary kbd{max-width:100%;overflow:hidden;text-overflow:ellipsis;color:var(--sug-text)}
+      [data-dsh-suggestions-settings] .sug-count{font-size:11px;white-space:nowrap}
+      [data-dsh-suggestions-settings] .sug-record{min-height:38px;min-width:58px;padding:7px 12px;border:1px solid var(--sug-border);border-radius:8px;background:var(--dsw-alias-bg-layer-2,transparent);color:inherit}
+      [data-dsh-suggestions-settings] .sug-record[aria-pressed=true]{border-color:var(--sug-accent);color:var(--sug-accent)}
+      [data-dsh-suggestions-settings] .sug-record:hover:enabled,[data-dsh-suggestions-settings] .sug-more:hover:enabled{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}
+      [data-dsh-suggestions-settings] .sug-more{min-width:30px;min-height:38px;padding:4px;border:0;border-radius:8px;background:transparent;color:var(--sug-muted);font-size:20px}
+      [data-dsh-suggestions-settings] .sug-advanced{grid-column:1/-1;border-top:1px solid var(--sug-border);padding-top:12px}
+      [data-dsh-suggestions-settings] .sug-alternative{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:44px}
+      [data-dsh-suggestions-settings] .sug-alternative kbd{flex:1;min-width:0;text-align:start;overflow-wrap:anywhere;white-space:normal}
+      [data-dsh-suggestions-settings] .sug-small{min-height:34px;padding:5px 9px;border:0;border-radius:7px;background:transparent;color:var(--sug-muted);font-size:12px}
+      [data-dsh-suggestions-settings] .sug-small:hover:enabled{color:var(--sug-text);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}
       [data-dsh-suggestions-settings] kbd{font:inherit;font-size:12px;font-weight:500;min-width:22px;text-align:center;white-space:nowrap}
       [data-dsh-suggestions-settings] .sug-key-separator{color:var(--sug-muted);font-size:11px}
       [data-dsh-suggestions-settings] .sug-feedback{display:flex;align-items:center;gap:8px;min-height:42px;margin-top:8px;color:var(--sug-muted);font-size:12px}
+      [data-dsh-suggestions-settings] .sug-feedback:empty{min-height:14px;margin-top:0}
       [data-dsh-suggestions-settings] .sug-feedback[data-state=saved]{color:var(--dsw-alias-state-success-primary,#55ad7c)}
       [data-dsh-suggestions-settings] .sug-feedback[data-state=error]{color:var(--dsw-alias-state-error-primary,#e57676)}
       [data-dsh-suggestions-settings] .sug-retry{border:0;padding:3px 6px;background:transparent;color:inherit;text-decoration:underline;text-underline-offset:3px}
-      [data-dsh-suggestions-settings] .sug-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--sug-border);padding-top:18px}
+      [data-dsh-suggestions-settings] .sug-footer{position:sticky;bottom:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--sug-border);padding:12px 0;background:var(--dsw-alias-bg-layer-2,#292929)}
       [data-dsh-suggestions-settings] .sug-reset{min-height:38px;padding:8px 0;border:0;background:transparent;color:var(--sug-muted)}
       [data-dsh-suggestions-settings] .sug-reset:hover:enabled{color:var(--sug-text)}
       [data-dsh-suggestions-settings] .sug-save{min-height:38px;min-width:96px;padding:9px 18px;border:0;border-radius:9px;font-weight:500;background:var(--dsw-alias-label-primary,#eee);color:var(--dsw-alias-bg-layer-2,#242424)}
@@ -670,8 +675,8 @@ window.__ModuleLoader__.load({
       @container dsh-suggestion-settings (max-width:440px){
         [data-dsh-suggestions-settings] .sug-row{grid-template-columns:minmax(0,1fr);gap:12px;padding:16px}
         [data-dsh-suggestions-settings] .sug-controls{justify-content:flex-start;max-width:100%}
-        [data-dsh-suggestions-settings] .sug-key-button{min-height:44px;max-width:100%}
-        [data-dsh-suggestions-settings] .sug-trigger,[data-dsh-suggestions-settings] .sug-add{min-height:44px}
+        [data-dsh-suggestions-settings] .sug-record,[data-dsh-suggestions-settings] .sug-more,[data-dsh-suggestions-settings] .sug-small{min-height:44px}
+        [data-dsh-suggestions-settings] .sug-summary{justify-content:flex-start;max-width:calc(100cqw - 154px)}
         [data-dsh-suggestions-settings] .sug-description{margin-bottom:22px}
         [data-dsh-suggestions-settings] .sug-section-heading{display:block}
         [data-dsh-suggestions-settings] .sug-section-heading span{display:block;margin-top:4px}
@@ -685,21 +690,23 @@ window.__ModuleLoader__.load({
         title: '输入框建议',
         description: '推荐下一条消息，也可以优化输入的草稿。',
         shortcuts: '快捷键',
-        hint: '分别设置按键和单击 / 双击',
+        hint: '点击录制，再按下快捷键',
         accept: '采纳建议',
         acceptNote: '将当前建议填入草稿。',
         generate: '空框生成建议',
         generateNote: '空输入框没有建议时，根据聊天记录生成。',
         optimize: '优化草稿',
         optimizeNote: '改写已输入的草稿；→ 需在文末。',
-        single: '单击', double: '双击', trigger: '触发方式', add: '添加', remove: '移除',
+        single: '单击', double: '双击', record: '录制', stop: '取消', more: '管理备用键', add: '添加备用键', remove: '移除', or: '或',
+        wait: '再按一次可录成双击',
+        duplicate: '这个按键已在当前动作中。',
+        unsupported: '这个按键无法用于快捷键，请换一个。',
         next: '下一条建议',
         nextNote: '到末尾时生成新建议。',
         prev: '上一条建议',
         prevNote: '返回已生成的建议。',
-        press: '按下快捷键…',
-        cancel: '按下新快捷键，Esc 取消。',
-        change: '修改',
+        press: '等待按键…',
+        cancel: '按一次或连按两次快捷键，Esc 取消。',
         save: '保存更改',
         saving: '保存中…',
         reset: '恢复默认',
@@ -714,21 +721,23 @@ window.__ModuleLoader__.load({
         title: 'Composer suggestions',
         description: 'Get a follow-up suggestion or improve your draft.',
         shortcuts: 'Keyboard shortcuts',
-        hint: 'Set keys and press counts for each action',
+        hint: 'Click Record, then press your shortcut',
         accept: 'Accept suggestion',
         acceptNote: 'Insert the visible suggestion into your draft.',
         generate: 'Generate in empty composer',
         generateNote: 'Generate from chat history when the composer is empty with no suggestion.',
         optimize: 'Improve draft',
         optimizeNote: 'Rewrite your draft; Right must be at the end.',
-        single: 'Single press', double: 'Double press', trigger: 'press count', add: 'Add', remove: 'Remove',
+        single: 'Single press', double: 'Double press', record: 'Record', stop: 'Cancel', more: 'Manage alternative keys', add: 'Add alternative', remove: 'Remove', or: 'or',
+        wait: 'Press again to record a double press',
+        duplicate: 'This key is already assigned to this action.',
+        unsupported: 'This key cannot be used as a shortcut. Try another.',
         next: 'Next suggestion',
         nextNote: 'Generate a new suggestion at the end of the list.',
         prev: 'Previous suggestion',
         prevNote: 'Go back to a generated suggestion.',
-        press: 'Press a shortcut…',
-        cancel: 'Press a new shortcut, or Esc to cancel.',
-        change: 'Change',
+        press: 'Waiting for a key…',
+        cancel: 'Press once or twice. Esc cancels.',
         save: 'Save changes',
         saving: 'Saving…',
         reset: 'Reset',
@@ -745,6 +754,8 @@ window.__ModuleLoader__.load({
       const [savedKeys, setSavedKeys] = useState(null);
       const [loading, setLoading] = useState(true);
       const [recording, setRecording] = useState('');
+      const [capture, setCapture] = useState(null);
+      const [expanded, setExpanded] = useState('');
       const [status, setStatus] = useState('');
       const [busy, setBusy] = useState(false);
       const draftRef = useRef(draft);
@@ -783,27 +794,63 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         if (!recording) return undefined;
-        const onKey = event => {
+        let pending = null, timer, modifier;
+        const consume = event => {
           event.preventDefault(); event.stopPropagation();
           event.stopImmediatePropagation?.();
+        };
+        const finish = () => {
+          if (!pending) return;
+          clearTimeout(timer);
+          const [name, slot] = recording.split(':'), index = Number(slot);
+          const next = normalizeKeys(draftRef.current || DEFAULT_KEYS), action = next[name];
+          if (action.keys.some((key, i) => key === pending.binding && i !== index)) setStatus('duplicate');
+          else {
+            action.keys[index] = pending.binding;
+            action.presses = pending.presses;
+            setDraft(next); setStatus('');
+          }
+          setRecording(''); setCapture(null);
+        };
+        const startStroke = (binding, code, released = false, now = Date.now()) => {
+          const doubled = pending?.binding === binding && pending.released && now - pending.at <= 500;
+          clearTimeout(timer);
+          pending = { binding, code, at: now, presses: doubled ? 2 : 1, released };
+          setCapture({ binding, presses: pending.presses });
+          if (released) { if (doubled) finish(); else timer = setTimeout(finish, Math.max(0, 500 - (Date.now() - now))); }
+        };
+        const onKey = event => {
+          consume(event);
           if (event.key === 'Escape') { setRecording(''); return; }
-          if (event.isComposing || event.repeat) return;
-          if (['Shift', 'Control', 'Meta', 'Alt', 'AltGraph', 'CapsLock', 'Fn'].includes(event.key)) return;
+          if (event.isComposing || event.keyCode === 229) { clearTimeout(timer); pending = null; modifier = null; setCapture(null); return; }
+          if (event.repeat) return;
+          const code = keyCode(event);
+          if (['Shift', 'Control', 'Meta', 'Alt', 'AltGraph', 'CapsLock', 'Fn'].includes(event.key)) {
+            modifier = event.key === 'Alt' || event.key === 'AltGraph' ? { binding: keyBinding(event), code, at: Date.now() } : null;
+            if (modifier && pending?.released && pending.binding === modifier.binding && modifier.at - pending.at <= 500) clearTimeout(timer);
+            return;
+          }
+          modifier = null;
           const binding = keyBinding(event);
           if (!binding) return;
-          const [name, slot] = recording.split(':');
-          setDraft(current => {
-            const next = normalizeKeys(current || DEFAULT_KEYS), action = next[name];
-            const index = Number(slot);
-            if (action.keys.some((key, i) => key === binding && i !== index)) return current;
-            action.keys[index] = binding;
-            return next;
-          });
-          setRecording('');
-          setStatus('');
+          if (!RECORDABLE_CODE.test(code)) { setStatus('unsupported'); return; }
+          startStroke(binding, code);
         };
+        const onKeyUp = event => {
+          consume(event);
+          const code = keyCode(event);
+          if (modifier?.code === code) { const stroke = modifier; modifier = null; startStroke(stroke.binding, code, true, stroke.at); }
+          else if (pending?.code === code) {
+            pending.released = true;
+            if (pending.presses === 2) finish();
+            else timer = setTimeout(finish, Math.max(0, 500 - (Date.now() - pending.at)));
+          }
+        };
+        const cancel = () => { clearTimeout(timer); pending = null; setRecording(''); setCapture(null); };
         window.addEventListener('keydown', onKey, true);
-        return () => window.removeEventListener('keydown', onKey, true);
+        window.addEventListener('keyup', onKeyUp, true);
+        window.addEventListener('blur', cancel);
+        return () => { clearTimeout(timer); window.removeEventListener('keydown', onKey, true); window.removeEventListener('keyup', onKeyUp, true); window.removeEventListener('blur', cancel); };
       }, [recording]);
 
       const save = async next => {
@@ -823,34 +870,45 @@ window.__ModuleLoader__.load({
       };
       const keys = draft || DEFAULT_KEYS;
       const dirty = savedKeys !== null && JSON.stringify(keys) !== JSON.stringify(savedKeys);
-      const error = ['loadFailed', 'failed', 'conflict'].includes(status);
+      const error = ['loadFailed', 'failed', 'conflict', 'duplicate', 'unsupported'].includes(status);
       const message = loading ? TEXT.loading : status ? TEXT[status] : dirty ? TEXT.unsaved : '';
       const disabled = loading || busy || savedKeys === null;
+      const startRecording = (name, index = 0) => {
+        const id = `${name}:${index}`;
+        setCapture(null); setRecording(recording === id ? '' : id); setStatus('');
+      };
       const shortcut = (name, label) => {
         const action = keys[name];
-        const edit = index => { const id = `${name}:${index}`; setRecording(recording === id ? '' : id); setStatus(''); };
-        const chords = action.keys.map((binding, index) => h('span', { className: 'sug-key-option', key: index },
-          h('button', { type: 'button', className: 'sug-key-button', disabled,
-            'aria-label': `${TEXT.change} ${label} ${keyLabel(binding)}`, 'aria-pressed': recording === `${name}:${index}`,
-            'aria-description': recording === `${name}:${index}` ? TEXT.cancel : gestureLabel({ ...action, keys: [binding] }, zh),
-            onClick: () => edit(index),
-          }, recording === `${name}:${index}` ? TEXT.press : keyLabel(binding).split('＋').flatMap((part, i) => [
-            i > 0 ? h('span', { key: `${i}+`, className: 'sug-key-separator', 'aria-hidden': true }, '+') : null,
-            h('kbd', { key: i }, part),
-          ])),
-          action.keys.length > 1 ? h('button', { type: 'button', className: 'sug-remove', disabled: disabled || Boolean(recording), 'aria-label': `${TEXT.remove} ${label} ${keyLabel(binding)}`,
-            onClick: () => { setDraft(current => ({ ...current, [name]: { ...current[name], keys: current[name].keys.filter((_, i) => i !== index) } })); setStatus(''); },
-          }, '×') : null));
+        const active = recording.startsWith(name + ':');
         return h('div', { className: 'sug-controls' },
-          h('select', { className: 'sug-trigger', 'aria-label': `${label} ${TEXT.trigger}`, value: action.presses, disabled,
-            onChange: event => { const presses = Number(event.target.value); setRecording(''); setDraft(current => ({ ...current, [name]: { ...current[name], presses } })); setStatus(''); },
-          }, h('option', { value: 1 }, TEXT.single), h('option', { value: 2 }, TEXT.double)),
-          h('div', { className: 'sug-key-list' }, chords,
-            action.keys.length < 3 ? h('button', { type: 'button', className: 'sug-add', disabled,
-              'aria-label': `${TEXT.add} ${label}`, 'aria-pressed': recording === `${name}:${action.keys.length}`,
-              onClick: () => edit(action.keys.length),
-            }, recording === `${name}:${action.keys.length}` ? TEXT.press : '+') : null));
+          h('div', { className: 'sug-summary', 'data-recording': active, 'aria-label': `${label} ${TEXT.shortcuts}`, 'aria-live': active ? 'polite' : undefined },
+            active ? (capture ? (capture.presses === 2 ? TEXT.double : TEXT.single) + ' ' + keyLabel(capture.binding) : TEXT.press)
+              : [h('span', { key: 'count', className: 'sug-count' }, action.presses === 2 ? TEXT.double : TEXT.single), ...action.keys.flatMap((binding, index) => [
+                index ? h('span', { key: `${index}-or`, className: 'sug-key-separator' }, TEXT.or) : null,
+                h('kbd', { key: binding }, keyLabel(binding)),
+              ])]),
+          h('button', { type: 'button', className: 'sug-record', disabled,
+            'aria-label': `${active ? TEXT.stop : TEXT.record} ${label}`, 'aria-pressed': active,
+            onClick: () => { if (active) { setRecording(''); setCapture(null); } else startRecording(name); },
+          }, active ? TEXT.stop : TEXT.record),
+          h('button', { type: 'button', className: 'sug-more', disabled: disabled || Boolean(recording),
+            'aria-label': `${TEXT.more} ${label}`, 'aria-expanded': expanded === name,
+            onClick: () => setExpanded(expanded === name ? '' : name),
+          }, '…'));
       };
+      const alternatives = (name, label) => expanded !== name ? null : h('div', { className: 'sug-advanced' },
+        keys[name].keys.map((binding, index) => h('div', { className: 'sug-alternative', key: binding },
+          h('kbd', null, keyLabel(binding)),
+          h('button', { type: 'button', className: 'sug-small', disabled: disabled || Boolean(recording),
+            'aria-label': `${TEXT.record} ${label} ${keyLabel(binding)}`, onClick: () => startRecording(name, index),
+          }, TEXT.record),
+          keys[name].keys.length > 1 ? h('button', { type: 'button', className: 'sug-small', disabled: disabled || Boolean(recording),
+            'aria-label': `${TEXT.remove} ${label} ${keyLabel(binding)}`,
+            onClick: () => { setDraft(current => ({ ...current, [name]: { ...current[name], keys: current[name].keys.filter((_, i) => i !== index) } })); setStatus(''); },
+          }, TEXT.remove) : null)),
+        keys[name].keys.length < 3 ? h('button', { type: 'button', className: 'sug-small', disabled: disabled || Boolean(recording),
+          'aria-label': `${TEXT.add} ${label}`, onClick: () => startRecording(name, keys[name].keys.length),
+        }, '+ ' + TEXT.add) : null);
 
       return h('section', { 'data-dsh-suggestions-settings': '', 'aria-label': TEXT.title },
         h('style', null, SETTINGS_CSS),
@@ -858,10 +916,10 @@ window.__ModuleLoader__.load({
         h('p', { className: 'sug-description' }, TEXT.description),
         h('div', { className: 'sug-section-heading' }, h('h3', null, TEXT.shortcuts), h('span', null, TEXT.hint)),
         h('div', { className: 'sug-rows' }, ROWS.map(([name, label, note]) => h('div', { key: name, className: 'sug-row', 'data-action': name, 'data-recording': recording.startsWith(name + ':') },
-          h('div', null, h('div', { className: 'sug-row-title' }, label), h('div', { className: 'sug-row-note' }, recording.startsWith(name + ':') ? TEXT.cancel : note)),
-          shortcut(name, label)))),
+          h('div', null, h('div', { className: 'sug-row-title' }, label), h('div', { className: 'sug-row-note' }, recording.startsWith(name + ':') ? capture?.presses === 1 ? TEXT.wait + ' · Esc ' + TEXT.stop : TEXT.cancel : note)),
+          shortcut(name, label), alternatives(name, label)))),
         h('div', { className: 'sug-feedback', 'data-state': error ? 'error' : status, role: error ? 'alert' : 'status', 'aria-live': 'polite' },
-          h('span', null, message),
+          message ? h('span', null, message) : null,
           status === 'loadFailed' ? h('button', { type: 'button', className: 'sug-retry', onClick: () => load() }, TEXT.retry) : null),
         h('div', { className: 'sug-footer' },
           h('button', { type: 'button', className: 'sug-reset', disabled: disabled || Boolean(recording) || JSON.stringify(keys) === JSON.stringify(DEFAULT_KEYS), onClick: () => save(DEFAULT_KEYS) }, TEXT.reset),
