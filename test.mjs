@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join, sep } from 'node:path';
 import { createServer } from 'node:http';
@@ -126,12 +126,27 @@ try {
     const h = harness();
     try {
       const initial = await h.api({ action: 'config' });
-      assert.deepEqual(initial.value.keys, { composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] });
-      const keys = { composer: ['Tab'], next: ['F2'], prev: ['F3'] };
+      assert.deepEqual(initial.value.keys, normalizeKeys({}));
+      const keys = normalizeKeys({
+        accept: { keys: ['Tab'], presses: 1 }, generate: { keys: ['F2'], presses: 2 },
+        optimize: { keys: ['Control+KeyP'], presses: 1 }, next: { keys: ['F3'], presses: 1 }, prev: { keys: ['F4'], presses: 2 },
+      });
       assert.deepEqual((await h.api({ action: 'config', keys })).value.keys, keys);
       assert.deepEqual((await h.api({ action: 'config' })).value.keys, keys);
       assert.deepEqual(JSON.parse(readFileSync(h.configFile, 'utf8')), keys);
       assert.equal(h.calls.length, 0);
+      const conflict = { ...keys, next: { keys: ['F2'], presses: 1 } };
+      assert.equal((await h.api({ action: 'config', keys: conflict })).ok, false);
+      assert.deepEqual(JSON.parse(readFileSync(h.configFile, 'utf8')), keys);
+    } finally { h.close(); }
+  });
+  await test('legacy settings are readable without rewriting the saved file', async () => {
+    const h = harness();
+    try {
+      const legacy = { composer: ['F2'], next: ['AltRight'], prev: ['AltLeft'] };
+      writeFileSync(h.configFile, JSON.stringify(legacy));
+      assert.deepEqual((await h.api({ action: 'config' })).value.keys, normalizeKeys(legacy));
+      assert.deepEqual(JSON.parse(readFileSync(h.configFile, 'utf8')), legacy);
     } finally { h.close(); }
   });
   await test('shared suggestion policy preserves the answer ending and accepts real abstention only', () => {
@@ -401,13 +416,30 @@ try {
   rmSync(target, { recursive: true, force: true });
 }
 
-await test('key configuration normalizes to defaults and rejects collisions', () => {
-  assert.deepEqual(normalizeKeys({}), { composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] });
-  assert.deepEqual(normalizeKeys({ composer: ['F2'], next: ['F3'], prev: ['F4'] }), { composer: ['F2'], next: ['F3'], prev: ['F4'] });
-  assert.deepEqual(normalizeKeys({ composer: ['F2'], next: ['F2'], prev: ['F4'] }), { composer: ['F2'], next: ['Alt+ArrowDown'], prev: ['F4'] });
-  assert.deepEqual(normalizeKeys({ composer: ['F2', 'F2', 'bad code!'], next: 'F3', prev: '' }), { composer: ['F2'], next: ['F3'], prev: ['Alt+ArrowUp'] });
-  assert.deepEqual(normalizeKeys({ next: ['F3'], prev: ['F3'] }), { composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] });
-  assert.deepEqual(normalizeKeys({ composer: ['Control+Shift+KeyP'], next: ['Alt+ArrowDown'], prev: ['Shift+Alt+ArrowUp'] }), { composer: ['Control+Shift+KeyP'], next: ['Alt+ArrowDown'], prev: ['Alt+Shift+ArrowUp'] });
-  assert.deepEqual(normalizeKeys({ composer: ['Alt+ArrowDown', 'Alt+ArrowUp', 'Alt+PageDown'] }), normalizeKeys({}));
-  assert.deepEqual(normalizeKeys({ next: ['Alt+UnknownCode'] }), normalizeKeys({}));
+await test('key configuration keeps action keys and press counts independent', () => {
+  const defaults = normalizeKeys({});
+  assert.deepEqual(Object.keys(defaults), ['accept', 'generate', 'optimize', 'next', 'prev']);
+  for (const name of Object.keys(defaults)) {
+    const input = structuredClone(defaults);
+    input[name] = { keys: ['F2'], presses: defaults[name].presses === 1 ? 2 : 1 };
+    const result = normalizeKeys(input);
+    assert.deepEqual(result, input);
+    for (const other of Object.keys(defaults).filter(other => other !== name)) assert.deepEqual(result[other], defaults[other]);
+  }
+  assert.deepEqual(normalizeKeys({ accept: { keys: ['F2', 'F2', 'bad code!'], presses: 2 } }).accept, { keys: ['F2'], presses: 2 });
+  assert.deepEqual(normalizeKeys({ generate: { keys: ['Shift+Control+KeyP'], presses: 1 } }).generate, { keys: ['Control+Shift+KeyP'], presses: 1 });
+  assert.deepEqual(normalizeKeys({ next: { keys: ['Alt+UnknownCode'], presses: 17 } }), defaults);
+});
+
+await test('legacy composer and paging keys migrate with their existing press counts', () => {
+  const legacy = normalizeKeys({ composer: ['F2'], next: ['AltRight'], prev: ['Shift+Alt+ArrowUp'] });
+  assert.deepEqual(legacy.accept, { keys: ['F2'], presses: 1 });
+  assert.deepEqual(legacy.generate, { keys: ['F2'], presses: 2 });
+  assert.deepEqual(legacy.optimize, { keys: ['F2'], presses: 2 });
+  assert.deepEqual(legacy.next, { keys: ['AltRight'], presses: 2 });
+  assert.deepEqual(legacy.prev, { keys: ['Alt+Shift+ArrowUp'], presses: 1 });
+  const mixed = normalizeKeys({ composer: ['Tab'], generate: { keys: ['F8'], presses: 1 } });
+  assert.deepEqual(mixed.accept, { keys: ['Tab'], presses: 1 });
+  assert.deepEqual(mixed.generate, { keys: ['F8'], presses: 1 });
+  assert.deepEqual(mixed.optimize, { keys: ['Tab'], presses: 2 });
 });

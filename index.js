@@ -14,7 +14,13 @@ const BRIDGE_FILE = join(BRIDGE_DIR, 'bridge.json');
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_ENTRIES = 64;
 const CONFIG_PATH = join(homedir(), '.dsh', 'dsh-suggestions-config.json');
-const DEFAULT_KEYS = Object.freeze({ composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] });
+const DEFAULT_KEYS = Object.freeze({
+  accept: { keys: ['Tab', 'ArrowRight'], presses: 1 },
+  generate: { keys: ['Tab', 'ArrowRight'], presses: 2 },
+  optimize: { keys: ['Tab', 'ArrowRight'], presses: 2 },
+  next: { keys: ['Alt+ArrowDown'], presses: 1 },
+  prev: { keys: ['Alt+ArrowUp'], presses: 1 },
+});
 const KEY_CODE = /^(?:Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Numpad(?:[0-9]|Add|Subtract|Multiply|Divide|Decimal|Enter|Equal|Comma)|Arrow(?:Right|Left|Up|Down)|Alt(?:Left|Right)|Tab|Enter|Escape|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)$/;
 function normalizeBinding(value) {
   if (typeof value !== 'string') return '';
@@ -23,42 +29,50 @@ function normalizeBinding(value) {
   return [...['Control', 'Alt', 'Shift', 'Meta'].filter(modifier => parts.includes(modifier)), code].join('+');
 }
 
-// Keys travel as KeyboardEvent.code so a layout or IME change never breaks
-// them. Anything unparsable falls back to the shipped default instead of
-// leaving the composer without a working gesture.
+// Each action owns both its bindings and its press count. Older installations
+// stored the first three actions under "composer"; migrate those on read.
 export function normalizeKeys(input = {}) {
   const out = {};
-  for (const name of ['composer', 'next', 'prev']) {
-    const raw = typeof input?.[name] === 'string' ? [input[name]] : Array.isArray(input?.[name]) ? input[name] : [];
+  for (const name of Object.keys(DEFAULT_KEYS)) {
+    const value = input?.[name] ?? (['accept', 'generate', 'optimize'].includes(name) ? input?.composer : undefined);
+    const structured = value && typeof value === 'object' && !Array.isArray(value);
+    const bindings = structured ? value.keys : value;
+    const raw = typeof bindings === 'string' ? [bindings] : Array.isArray(bindings) ? bindings : [];
     const codes = [];
     for (const value of raw) {
       if (typeof value !== 'string') continue;
       const code = normalizeBinding(value);
       if (!code || codes.includes(code)) continue;
       codes.push(code);
-      if (codes.length >= (name === 'composer' ? 3 : 1)) break;
+      if (codes.length >= 3) break;
     }
-    out[name] = codes.length ? codes : [...DEFAULT_KEYS[name]];
-  }
-  if (out.next[0] === out.prev[0]) { out.next = [...DEFAULT_KEYS.next]; out.prev = [...DEFAULT_KEYS.prev]; }
-  for (const name of ['next', 'prev']) {
-    if (!out.composer.includes(out[name][0])) continue;
-    const other = name === 'next' ? 'prev' : 'next';
-    const alternatives = name === 'next' ? ['Alt+ArrowDown', 'Alt+ArrowUp', 'Alt+PageDown'] : ['Alt+ArrowUp', 'Alt+ArrowDown', 'Alt+PageUp'];
-    const available = alternatives.find(code => !out.composer.includes(code) && code !== out[other][0]);
-    if (!available) return Object.fromEntries(Object.entries(DEFAULT_KEYS).map(([name, codes]) => [name, [...codes]]));
-    out[name] = [available];
+    const keys = codes.length ? codes : [...DEFAULT_KEYS[name].keys];
+    const legacyPaging = !structured && codes.length && ['next', 'prev'].includes(name);
+    const presses = structured && [1, 2].includes(value.presses) ? value.presses
+      : legacyPaging ? (keys[0].includes('+') ? 1 : 2) : DEFAULT_KEYS[name].presses;
+    out[name] = { keys, presses };
   }
   return out;
 }
 
+function keyConflict(keys) {
+  // Acceptance and generation use different empty-composer states. Draft
+  // optimization uses another state. Paging must not steal either gesture.
+  return [['next', 'prev'], ['next', 'accept'], ['next', 'generate'], ['prev', 'accept'], ['prev', 'generate']]
+    .some(([a, b]) => keys[a].keys.some(key => keys[b].keys.includes(key)));
+}
+
 function readKeys(file) {
-  try { return normalizeKeys(JSON.parse(readFileSync(file, 'utf8'))); }
+  try {
+    const keys = normalizeKeys(JSON.parse(readFileSync(file, 'utf8')));
+    return keyConflict(keys) ? normalizeKeys(DEFAULT_KEYS) : keys;
+  }
   catch { return normalizeKeys(DEFAULT_KEYS); }
 }
 
 function writeKeys(input, file) {
   const keys = normalizeKeys(input);
+  if (keyConflict(keys)) throw new Error('Conflicting shortcuts in the empty composer');
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `${JSON.stringify(keys, null, 2)}\n`, { mode: 0o600 });
   return keys;

@@ -94,17 +94,43 @@ window.__ModuleLoader__.load({
       } catch { return false; }
     }
 
-    function keycapSvg() {
-      return h('svg', { width: 30, height: 18, viewBox: '0 0 30 18', 'aria-hidden': true, style: { display: 'block' } },
-        h('rect', { x: 0.5, y: 0.5, width: 29, height: 17, rx: 4, fill: 'none', stroke: 'currentColor', strokeWidth: 1, opacity: 0.75 }),
-        h('text', { x: 15, y: 12.5, textAnchor: 'middle', fontSize: 9.5, fill: 'currentColor', fontFamily: 'inherit' }, 'Tab'));
+    function keycap(label) {
+      return h('span', { 'aria-hidden': true, style: { display: 'block', border: '1px solid currentColor', borderRadius: 4, padding: '0 5px', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 10, lineHeight: '17px' } }, label);
     }
 
-    const DEFAULT_KEYS = { composer: ['Tab', 'ArrowRight'], next: ['Alt+ArrowDown'], prev: ['Alt+ArrowUp'] };
+    const DEFAULT_KEYS = {
+      accept: { keys: ['Tab', 'ArrowRight'], presses: 1 },
+      generate: { keys: ['Tab', 'ArrowRight'], presses: 2 },
+      optimize: { keys: ['Tab', 'ArrowRight'], presses: 2 },
+      next: { keys: ['Alt+ArrowDown'], presses: 1 },
+      prev: { keys: ['Alt+ArrowUp'], presses: 1 },
+    };
+    function normalizeKeys(input = {}) {
+      const out = {};
+      for (const name of Object.keys(DEFAULT_KEYS)) {
+        const value = input?.[name] ?? (['accept', 'generate', 'optimize'].includes(name) ? input?.composer : undefined);
+        const structured = value && typeof value === 'object' && !Array.isArray(value);
+        const bindings = structured ? value.keys : value;
+        const raw = typeof bindings === 'string' ? [bindings] : Array.isArray(bindings) ? bindings : [];
+        const keys = [...new Set(raw.filter(key => typeof key === 'string' && key))].slice(0, 3);
+        const legacyPaging = !structured && keys.length && ['next', 'prev'].includes(name);
+        out[name] = {
+          keys: keys.length ? keys : [...DEFAULT_KEYS[name].keys],
+          presses: structured && [1, 2].includes(value.presses) ? value.presses
+            : legacyPaging ? (keys[0].includes('+') ? 1 : 2) : DEFAULT_KEYS[name].presses,
+        };
+      }
+      return out;
+    }
+    function keyConflict(keys) {
+      return [['next', 'prev'], ['next', 'accept'], ['next', 'generate'], ['prev', 'accept'], ['prev', 'generate']]
+        .some(([a, b]) => keys[a].keys.some(key => keys[b].keys.includes(key)));
+    }
     const KEYS_EVENT = 'dsh-suggestions:keys';
     const KEY_LABELS = { Tab: 'Tab', ArrowRight: '→', ArrowLeft: '←', ArrowUp: '↑', ArrowDown: '↓', AltLeft: '左 Alt', AltRight: '右 Alt', Escape: 'Esc', Enter: 'Enter', Space: 'Space', Backspace: 'Backspace' };
     const keyLabel = binding => String(binding || '').split('+').map(code => KEY_LABELS[code] || code.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad/, 'Num ')).join('＋');
     const isChinese = language => /^zh/i.test(language || (typeof navigator !== 'undefined' ? navigator.language : ''));
+    const gestureLabel = (gesture, zh = isChinese()) => (gesture.presses === 2 ? (zh ? '双击 ' : 'Double press ') : '') + gesture.keys.map(keyLabel).join(' / ');
     function keyCode(event) {
       if (event.code && event.code !== 'Unidentified') return event.code;
       if (event.key === 'AltGraph') return 'AltRight';
@@ -166,7 +192,6 @@ window.__ModuleLoader__.load({
       const deckRef = useRef(null);
       if (!deckRef.current) deckRef.current = new CandidateDeck();
       const shownRef = useRef('');
-      const altRef = useRef(null);
       const browsePressRef = useRef('');
       const adoptedRef = useRef(null);
       const activeRef = useRef(null);
@@ -204,12 +229,12 @@ window.__ModuleLoader__.load({
       // The settings card writes through the host route; the composer reads the
       // same keys, so a saved change applies without a reload.
       useEffect(() => {
-        let cancelled = false;
+        let cancelled = false, updated = false;
         fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config' }) })
           .then(response => response.ok ? response.json() : null)
-          .then(payload => { if (!cancelled && payload?.ok && payload.value?.keys) { keysRef.current = payload.value.keys; setKeys(payload.value.keys); } })
+          .then(payload => { if (!cancelled && !updated && payload?.ok && payload.value?.keys) { const next = normalizeKeys(payload.value.keys); if (JSON.stringify(keysRef.current) !== JSON.stringify(next)) keyRef.current = {}; keysRef.current = next; setKeys(next); } })
           .catch(() => {});
-        const onKeys = event => { if (event?.detail) { keysRef.current = event.detail; setKeys(event.detail); } };
+        const onKeys = event => { if (event?.detail) { updated = true; const next = normalizeKeys(event.detail); keyRef.current = {}; browsePressRef.current = ''; keysRef.current = next; setKeys(next); } };
         window.addEventListener(KEYS_EVENT, onKeys);
         return () => { cancelled = true; window.removeEventListener(KEYS_EVENT, onKeys); };
       }, []);
@@ -245,7 +270,6 @@ window.__ModuleLoader__.load({
         adoptedRef.current = null;
         setGenerating(false);
         setFeedback(null);
-        altRef.current = null;
         browsePressRef.current = '';
         clearHint();
         setDismissedKey('');
@@ -275,7 +299,6 @@ window.__ModuleLoader__.load({
         setGenerating(false);
         setFeedback(null);
         keyRef.current = {};
-        altRef.current = null;
         browsePressRef.current = '';
       }, [sessionId, pendingSubmissionKey, runningTurn, clearHint]);
 
@@ -521,29 +544,14 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!sessionId) return undefined;
         const onKeyDown = event => {
-          if (event.isComposing || event.keyCode === 229 || event.repeat) { keyRef.current = {}; altRef.current = null; return; }
+          if (event.isComposing || event.keyCode === 229 || event.repeat) { keyRef.current = {}; browsePressRef.current = ''; return; }
           const code = keyCode(event);
           const editor = composerEditor(anchorRef.current);
-          if (!editor || !(document.activeElement === editor || editor.contains(document.activeElement))) { keyRef.current = {}; altRef.current = null; return; }
+          if (!editor || !(document.activeElement === editor || editor.contains(document.activeElement))) { keyRef.current = {}; browsePressRef.current = ''; return; }
           const current = activeRef.current;
-          if (!current.idle || current.sending || current.runningTurn) { keyRef.current = {}; altRef.current = null; return; }
+          if (!current.idle || current.sending || current.runningTurn) { keyRef.current = {}; browsePressRef.current = ''; return; }
           const binding = keyBinding(event);
-          const browse = binding === keysRef.current.next[0] ? 1 : binding === keysRef.current.prev[0] ? -1 : 0;
-          if (browse) {
-            if (!current.empty) { altRef.current = null; browsePressRef.current = ''; return; }
-            const at = Date.now();
-            const previousAlt = altRef.current;
-            const doubledAlt = previousAlt?.code === code && at - previousAlt.at <= 500;
-            altRef.current = doubledAlt ? null : { code, at };
-            browsePressRef.current = code;
-            keyRef.current = {};
-            event.preventDefault(); event.stopPropagation();
-            if (binding.includes('+') || doubledAlt) step(browse);
-            return;
-          }
-          altRef.current = null;
           browsePressRef.current = '';
-          if ((event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) && !keysRef.current.composer.includes(binding)) { keyRef.current = {}; altRef.current = null; return; }
           if (event.key === 'Escape' && (visible || generationRef.current || feedback)) {
             setDismissedKey(hintKey || `${sessionId}#${lastTurnRef.current}`);
             generationRef.current?.controller.abort();
@@ -554,33 +562,50 @@ window.__ModuleLoader__.load({
             return;
           }
           const now = Date.now();
-          const composerKeys = keysRef.current.composer;
-          const shortcut = composerKeys.includes(binding);
           const previous = keyRef.current;
-          const mode = current.empty ? 'empty' : 'draft';
-          const doubled = previous.key === binding && previous.mode === mode && previous.draft === current.draft && now - previous.at <= 500;
+          const configured = keysRef.current;
+          const matches = action => configured[action].keys.includes(binding);
+          const continuing = action => previous.action === action && previous.key === binding && previous.draft === current.draft && now - previous.at <= 500;
+          let action;
+          if (current.empty) {
+            if (matches('next')) action = 'next';
+            else if (matches('prev')) action = 'prev';
+            // Finish an already-started generation gesture even if an
+            // automatic suggestion appeared between the two presses.
+            else if (matches('generate') && continuing('generate')) action = 'generate';
+            else if (visible && matches('accept')) action = 'accept';
+            else if (!visible && matches('generate')) action = 'generate';
+          } else if (matches('optimize') && (code !== 'ArrowRight' || caretAtEnd(editor))) action = 'optimize';
+          if (!action) {
+            // A second chord starts by pressing its modifiers again. Those
+            // modifier events belong to the same pending double-press gesture.
+            const modifier = code.replace(/(?:Left|Right)$/, '');
+            const expected = String(previous.key || '').split('+').slice(0, -1);
+            const sameGesture = previous.action && previous.draft === current.draft && now - previous.at <= 500;
+            if (sameGesture && ['Control', 'Alt', 'Shift', 'Meta'].includes(modifier)
+              && binding.split('+').every(part => expected.includes(part.replace(/(?:Left|Right)$/, '')))) return;
+            keyRef.current = {}; return;
+          }
           // A second press in the same acceptance gesture must not optimize
           // the suggestion that the first press has just inserted.
-          if (shortcut && previous.mode === 'accepted' && previous.draft === current.draft && now - previous.at <= 500) { event.preventDefault(); event.stopPropagation(); return; }
-          if (current.empty) {
-            if (visible && shortcut && !doubled) { event.preventDefault(); event.stopPropagation(); accept(); return; }
-            if (!shortcut) { keyRef.current = {}; return; }
-          } else if (!shortcut || (code === 'ArrowRight' && !caretAtEnd(editor))) {
-            keyRef.current = {};
-            return;
-          }
-          // Keep focus in the editor for the second Tab; a lone Right remains
-          // native caret movement when no suggestion is being accepted.
-          if (doubled || (shortcut && code !== 'ArrowRight')) { event.preventDefault(); event.stopPropagation(); }
-          keyRef.current = doubled ? {} : { key: binding, mode, draft: current.draft, at: now };
-          if (doubled) { if (current.empty) generate(); else optimize(); }
+          if (previous.mode === 'accepted' && previous.key === binding && previous.draft === current.draft && now - previous.at <= 500) { event.preventDefault(); event.stopPropagation(); return; }
+          const complete = configured[action].presses === 1 || continuing(action);
+          // An initial Right in a double-press gesture can retain native caret
+          // behavior; Tab must keep focus so its second press reaches us.
+          if (complete || code !== 'ArrowRight' || action === 'accept') { event.preventDefault(); event.stopPropagation(); browsePressRef.current = code; }
+          keyRef.current = complete ? {} : { action, key: binding, draft: current.draft, at: now };
+          if (!complete) return;
+          if (action === 'accept') { accept(); keyRef.current.key = binding; }
+          else if (action === 'generate') generate();
+          else if (action === 'optimize') optimize();
+          else step(action === 'next' ? 1 : -1);
         };
         const onKeyUp = event => {
           if (!browsePressRef.current || ![browsePressRef.current, 'AltLeft', 'AltRight'].includes(keyCode(event))) return;
           // A handled bare Alt must not hand focus to the browser/menu on release.
           event.preventDefault(); event.stopPropagation(); browsePressRef.current = '';
         };
-        const resetKeys = () => { keyRef.current = {}; altRef.current = null; browsePressRef.current = ''; };
+        const resetKeys = () => { keyRef.current = {}; browsePressRef.current = ''; };
         window.addEventListener('keydown', onKeyDown, true);
         window.addEventListener('keyup', onKeyUp, true);
         window.addEventListener('blur', resetKeys);
@@ -596,11 +621,11 @@ window.__ModuleLoader__.load({
       return h('div', { ref: anchorRef, 'data-dsh-suggestions': showing && layout ? (visible ? 'hint' : generating ? 'generating' : 'status') : 'anchor', style: showing ? { position: 'absolute', top: 0, left: 0, right: 0, height: 1, padding: 0, border: 0, pointerEvents: 'none', zIndex: 3 } : { display: 'none' } },
         showing && layout ? h('div', { 'data-dsh-suggestions-text': '', style: { ...layout, position: 'absolute', display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none', background: 'transparent', whiteSpace: 'nowrap', overflow: 'hidden' } },
           h('span', { 'aria-hidden': visible ? true : undefined, role: visible ? undefined : 'status', style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, visible ? hint.text : generating ? generatingLabel : feedback?.text),
-          visible && showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: keys.composer.map(keyLabel).join(' / '), onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycapSvg()) : null,
+          visible && showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: gestureLabel(keys.accept), onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycap(gestureLabel({ ...keys.accept, keys: keys.accept.keys.slice(0, 1) }))) : null,
           deck.items.length > 0 ? h('span', { 'data-dsh-suggestions-pager': '', style: { flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 0, opacity: 0.7, pointerEvents: 'auto' } },
-            browseButton(-1, (isChinese() ? '上一条' : 'Previous') + ' (' + keyLabel(keys.prev[0]) + ')'),
+            browseButton(-1, (isChinese() ? '上一条' : 'Previous') + ' (' + gestureLabel(keys.prev) + ')'),
             h('span', { 'data-dsh-suggestions-page': '', style: { fontSize: '11px', minWidth: 22, textAlign: 'center' } }, `${deck.index + 1}/${deck.items.length}`),
-            browseButton(1, (isChinese() ? '下一条' : 'Next') + ' (' + keyLabel(keys.next[0]) + ')')) : null) : null);
+            browseButton(1, (isChinese() ? '下一条' : 'Next') + ' (' + gestureLabel(keys.next) + ')')) : null) : null);
     }
 
     const SETTINGS_CSS = `
@@ -620,13 +645,19 @@ window.__ModuleLoader__.load({
       [data-dsh-suggestions-settings] button{font-family:inherit;font-size:13px;line-height:1.4;touch-action:manipulation;cursor:pointer;transition:background .15s,border-color .15s,opacity .15s}
       [data-dsh-suggestions-settings] button:disabled{cursor:default;opacity:.4}
       [data-dsh-suggestions-settings] button:focus-visible{outline:2px solid var(--sug-accent);outline-offset:3px}
-      [data-dsh-suggestions-settings] .sug-key-button{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px;min-height:42px;max-width:270px;padding:7px 12px;border:1px solid var(--sug-border);border-radius:9px;background:var(--dsw-alias-bg-layer-2,transparent);color:inherit}
+      [data-dsh-suggestions-settings] .sug-controls{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;max-width:310px}
+      [data-dsh-suggestions-settings] .sug-key-list{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+      [data-dsh-suggestions-settings] .sug-key-option{display:inline-flex;align-items:stretch;border:1px solid var(--sug-border);border-radius:9px;background:var(--dsw-alias-bg-layer-2,transparent)}
+      [data-dsh-suggestions-settings] .sug-key-button{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:5px;min-height:42px;max-width:230px;padding:7px 10px;border:0;border-radius:8px;background:transparent;color:inherit}
       [data-dsh-suggestions-settings] .sug-key-button:hover:enabled{border-color:color-mix(in srgb,currentColor 40%,transparent);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}
       [data-dsh-suggestions-settings] .sug-key-button[aria-pressed=true]{min-width:164px;border-color:var(--sug-accent);color:var(--sug-accent)}
-      [data-dsh-suggestions-settings] .sug-chord{display:inline-flex;align-items:center;gap:5px}
+      [data-dsh-suggestions-settings] .sug-trigger{min-height:42px;max-width:100%;padding:7px 8px;border:1px solid var(--sug-border);border-radius:9px;background:var(--dsw-alias-bg-layer-2,#292929);color:inherit;font:inherit;font-size:12px;cursor:pointer}
+      [data-dsh-suggestions-settings] .sug-trigger:disabled{opacity:.4}
+      [data-dsh-suggestions-settings] .sug-remove{align-self:stretch;min-width:24px;padding:0 5px;border:0;border-radius:0 8px 8px 0;background:transparent;color:var(--sug-muted);font-size:16px}
+      [data-dsh-suggestions-settings] .sug-add{min-width:32px;min-height:42px;padding:6px;border:0;border-radius:8px;background:transparent;color:var(--sug-muted);font-size:20px}
+      [data-dsh-suggestions-settings] .sug-remove:hover:enabled,[data-dsh-suggestions-settings] .sug-add:hover:enabled{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1));color:var(--sug-text)}
       [data-dsh-suggestions-settings] kbd{font:inherit;font-size:12px;font-weight:500;min-width:22px;text-align:center;white-space:nowrap}
       [data-dsh-suggestions-settings] .sug-key-separator{color:var(--sug-muted);font-size:11px}
-      [data-dsh-suggestions-settings] .sug-edit-icon{width:12px;height:12px;margin-left:2px;opacity:.45;flex:none}
       [data-dsh-suggestions-settings] .sug-feedback{display:flex;align-items:center;gap:8px;min-height:42px;margin-top:8px;color:var(--sug-muted);font-size:12px}
       [data-dsh-suggestions-settings] .sug-feedback[data-state=saved]{color:var(--dsw-alias-state-success-primary,#55ad7c)}
       [data-dsh-suggestions-settings] .sug-feedback[data-state=error]{color:var(--dsw-alias-state-error-primary,#e57676)}
@@ -638,7 +669,9 @@ window.__ModuleLoader__.load({
       [data-dsh-suggestions-settings] .sug-save:hover:enabled{opacity:.85}
       @container dsh-suggestion-settings (max-width:440px){
         [data-dsh-suggestions-settings] .sug-row{grid-template-columns:minmax(0,1fr);gap:12px;padding:16px}
-        [data-dsh-suggestions-settings] .sug-key-button{justify-self:start;min-height:44px;max-width:100%}
+        [data-dsh-suggestions-settings] .sug-controls{justify-content:flex-start;max-width:100%}
+        [data-dsh-suggestions-settings] .sug-key-button{min-height:44px;max-width:100%}
+        [data-dsh-suggestions-settings] .sug-trigger,[data-dsh-suggestions-settings] .sug-add{min-height:44px}
         [data-dsh-suggestions-settings] .sug-description{margin-bottom:22px}
         [data-dsh-suggestions-settings] .sug-section-heading{display:block}
         [data-dsh-suggestions-settings] .sug-section-heading span{display:block;margin-top:4px}
@@ -652,9 +685,14 @@ window.__ModuleLoader__.load({
         title: '输入框建议',
         description: '推荐下一条消息，也可以优化输入的草稿。',
         shortcuts: '快捷键',
-        hint: '点击快捷键修改',
-        composer: '采纳、生成与优化',
-        composerNote: ['有建议：按一次采纳。', '空输入框无建议：双击生成（需已有聊天记录）。', '有草稿：双击优化，→ 需在文末。'],
+        hint: '分别设置按键和单击 / 双击',
+        accept: '采纳建议',
+        acceptNote: '将当前建议填入草稿。',
+        generate: '空框生成建议',
+        generateNote: '空输入框没有建议时，根据聊天记录生成。',
+        optimize: '优化草稿',
+        optimizeNote: '改写已输入的草稿；→ 需在文末。',
+        single: '单击', double: '双击', trigger: '触发方式', add: '添加', remove: '移除',
         next: '下一条建议',
         nextNote: '到末尾时生成新建议。',
         prev: '上一条建议',
@@ -670,15 +708,20 @@ window.__ModuleLoader__.load({
         loading: '正在读取快捷键…',
         loadFailed: '快捷键读取失败',
         retry: '重试',
-        conflict: '两个动作不能用同一个键',
+        conflict: '翻页快捷键不能与采纳、生成或另一翻页动作共用。',
         failed: '保存失败，请重试',
       } : {
         title: 'Composer suggestions',
         description: 'Get a follow-up suggestion or improve your draft.',
         shortcuts: 'Keyboard shortcuts',
-        hint: 'Click a shortcut to change it',
-        composer: 'Accept, generate & improve',
-        composerNote: ['Suggestion visible: press once to accept.', 'Empty composer, no suggestion: press twice to generate from the chat history.', 'Draft entered: press twice to improve; Right must be at the end.'],
+        hint: 'Set keys and press counts for each action',
+        accept: 'Accept suggestion',
+        acceptNote: 'Insert the visible suggestion into your draft.',
+        generate: 'Generate in empty composer',
+        generateNote: 'Generate from chat history when the composer is empty with no suggestion.',
+        optimize: 'Improve draft',
+        optimizeNote: 'Rewrite your draft; Right must be at the end.',
+        single: 'Single press', double: 'Double press', trigger: 'press count', add: 'Add', remove: 'Remove',
         next: 'Next suggestion',
         nextNote: 'Generate a new suggestion at the end of the list.',
         prev: 'Previous suggestion',
@@ -694,10 +737,10 @@ window.__ModuleLoader__.load({
         loading: 'Loading shortcuts…',
         loadFailed: 'Could not load shortcuts',
         retry: 'Retry',
-        conflict: 'Two actions cannot share a key',
+        conflict: 'Paging keys cannot also accept, generate or page in the other direction.',
         failed: 'Could not save. Try again.',
       };
-      const ROWS = [['composer', TEXT.composer, TEXT.composerNote], ['next', TEXT.next, TEXT.nextNote], ['prev', TEXT.prev, TEXT.prevNote]];
+      const ROWS = ['accept', 'generate', 'optimize', 'next', 'prev'].map(name => [name, TEXT[name], TEXT[name + 'Note']]);
       const [draft, setDraft] = useState(null);
       const [savedKeys, setSavedKeys] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -715,7 +758,7 @@ window.__ModuleLoader__.load({
           const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config' }), signal });
           const payload = await response.json();
           if (!response.ok || !payload?.ok || !payload.value?.keys) throw new Error('config unavailable');
-          if (!signal?.aborted) { setDraft(payload.value.keys); setSavedKeys(payload.value.keys); }
+          if (!signal?.aborted) { const next = normalizeKeys(payload.value.keys); setDraft(next); setSavedKeys(next); }
         } catch {
           if (!signal?.aborted) setStatus('loadFailed');
         } finally { if (!signal?.aborted) setLoading(false); }
@@ -729,8 +772,8 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         const updated = event => {
-          const next = event.detail;
-          if (!next?.composer || !next?.next || !next?.prev) return;
+          if (!event.detail) return;
+          const next = normalizeKeys(event.detail);
           if (JSON.stringify(draftRef.current) === JSON.stringify(savedRef.current)) setDraft(next);
           setSavedKeys(next);
         };
@@ -748,7 +791,14 @@ window.__ModuleLoader__.load({
           if (['Shift', 'Control', 'Meta', 'Alt', 'AltGraph', 'CapsLock', 'Fn'].includes(event.key)) return;
           const binding = keyBinding(event);
           if (!binding) return;
-          setDraft(current => ({ ...(current || DEFAULT_KEYS), [recording]: [binding] }));
+          const [name, slot] = recording.split(':');
+          setDraft(current => {
+            const next = normalizeKeys(current || DEFAULT_KEYS), action = next[name];
+            const index = Number(slot);
+            if (action.keys.some((key, i) => key === binding && i !== index)) return current;
+            action.keys[index] = binding;
+            return next;
+          });
           setRecording('');
           setStatus('');
         };
@@ -756,17 +806,17 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('keydown', onKey, true);
       }, [recording]);
 
-      const conflicts = keys => keys.composer.includes(keys.next[0]) || keys.composer.includes(keys.prev[0]) || keys.next[0] === keys.prev[0];
       const save = async next => {
-        if (conflicts(next)) { setStatus('conflict'); return; }
+        if (keyConflict(next)) { setStatus('conflict'); return; }
         setBusy(true); setStatus('');
         try {
           const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config', keys: next }) });
           const payload = await response.json();
           if (!response.ok || !payload?.ok) throw new Error('save failed');
-          setDraft(payload.value.keys);
-          setSavedKeys(payload.value.keys);
-          window.dispatchEvent(new CustomEvent(KEYS_EVENT, { detail: payload.value.keys }));
+          const saved = normalizeKeys(payload.value.keys);
+          setDraft(saved);
+          setSavedKeys(saved);
+          window.dispatchEvent(new CustomEvent(KEYS_EVENT, { detail: saved }));
           setStatus('saved');
         } catch { setStatus('failed'); }
         finally { setBusy(false); }
@@ -777,19 +827,29 @@ window.__ModuleLoader__.load({
       const message = loading ? TEXT.loading : status ? TEXT[status] : dirty ? TEXT.unsaved : '';
       const disabled = loading || busy || savedKeys === null;
       const shortcut = (name, label) => {
-        const chords = keys[name].map((binding, index) => h('span', { className: 'sug-chord', key: binding },
-          index > 0 ? h('span', { className: 'sug-key-separator', 'aria-hidden': true }, '/') : null,
-          keyLabel(binding).split('＋').flatMap((part, i) => [
+        const action = keys[name];
+        const edit = index => { const id = `${name}:${index}`; setRecording(recording === id ? '' : id); setStatus(''); };
+        const chords = action.keys.map((binding, index) => h('span', { className: 'sug-key-option', key: index },
+          h('button', { type: 'button', className: 'sug-key-button', disabled,
+            'aria-label': `${TEXT.change} ${label} ${keyLabel(binding)}`, 'aria-pressed': recording === `${name}:${index}`,
+            'aria-description': recording === `${name}:${index}` ? TEXT.cancel : gestureLabel({ ...action, keys: [binding] }, zh),
+            onClick: () => edit(index),
+          }, recording === `${name}:${index}` ? TEXT.press : keyLabel(binding).split('＋').flatMap((part, i) => [
             i > 0 ? h('span', { key: `${i}+`, className: 'sug-key-separator', 'aria-hidden': true }, '+') : null,
             h('kbd', { key: i }, part),
-          ])));
-        return h('button', {
-          type: 'button', className: 'sug-key-button', disabled,
-          'aria-label': `${TEXT.change} ${label}`, 'aria-pressed': recording === name,
-          'aria-description': recording === name ? TEXT.cancel : keys[name].map(keyLabel).join(' / '),
-          onClick: () => { setRecording(recording === name ? '' : name); setStatus(''); },
-        }, recording === name ? TEXT.press : chords,
-        recording !== name ? h('svg', { className: 'sug-edit-icon', viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, 'aria-hidden': true }, h('path', { d: 'm10.5 3 2.5 2.5M3 10.5 10.5 3a1.8 1.8 0 0 1 2.5 2.5L5.5 13H3z' })) : null);
+          ])),
+          action.keys.length > 1 ? h('button', { type: 'button', className: 'sug-remove', disabled: disabled || Boolean(recording), 'aria-label': `${TEXT.remove} ${label} ${keyLabel(binding)}`,
+            onClick: () => { setDraft(current => ({ ...current, [name]: { ...current[name], keys: current[name].keys.filter((_, i) => i !== index) } })); setStatus(''); },
+          }, '×') : null));
+        return h('div', { className: 'sug-controls' },
+          h('select', { className: 'sug-trigger', 'aria-label': `${label} ${TEXT.trigger}`, value: action.presses, disabled,
+            onChange: event => { const presses = Number(event.target.value); setRecording(''); setDraft(current => ({ ...current, [name]: { ...current[name], presses } })); setStatus(''); },
+          }, h('option', { value: 1 }, TEXT.single), h('option', { value: 2 }, TEXT.double)),
+          h('div', { className: 'sug-key-list' }, chords,
+            action.keys.length < 3 ? h('button', { type: 'button', className: 'sug-add', disabled,
+              'aria-label': `${TEXT.add} ${label}`, 'aria-pressed': recording === `${name}:${action.keys.length}`,
+              onClick: () => edit(action.keys.length),
+            }, recording === `${name}:${action.keys.length}` ? TEXT.press : '+') : null));
       };
 
       return h('section', { 'data-dsh-suggestions-settings': '', 'aria-label': TEXT.title },
@@ -797,8 +857,8 @@ window.__ModuleLoader__.load({
         h('h2', { className: 'sug-heading' }, TEXT.title),
         h('p', { className: 'sug-description' }, TEXT.description),
         h('div', { className: 'sug-section-heading' }, h('h3', null, TEXT.shortcuts), h('span', null, TEXT.hint)),
-        h('div', { className: 'sug-rows' }, ROWS.map(([name, label, note]) => h('div', { key: name, className: 'sug-row', 'data-recording': recording === name },
-          h('div', null, h('div', { className: 'sug-row-title' }, label), h('div', { className: 'sug-row-note' }, recording === name ? TEXT.cancel : Array.isArray(note) ? note.map(line => h('div', { key: line }, line)) : note)),
+        h('div', { className: 'sug-rows' }, ROWS.map(([name, label, note]) => h('div', { key: name, className: 'sug-row', 'data-action': name, 'data-recording': recording.startsWith(name + ':') },
+          h('div', null, h('div', { className: 'sug-row-title' }, label), h('div', { className: 'sug-row-note' }, recording.startsWith(name + ':') ? TEXT.cancel : note)),
           shortcut(name, label)))),
         h('div', { className: 'sug-feedback', 'data-state': error ? 'error' : status, role: error ? 'alert' : 'status', 'aria-live': 'polite' },
           h('span', null, message),

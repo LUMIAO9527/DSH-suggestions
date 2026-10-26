@@ -127,10 +127,15 @@ function mount(initial = {}) {
     const event = new Event('keyup', { cancelable: true });
     Object.assign(event, { key, code: key, ...flags }); window.dispatchEvent(event); await flush(); return event;
   }
+  async function updateKeys(keys) {
+    state.configKeys = keys;
+    const event = new Event('dsh-suggestions:keys'); event.detail = keys;
+    window.dispatchEvent(event); await flush();
+  }
   function close() { for (const hook of hooks) hook?.cleanup?.(); timers.clear(); frames.clear(); }
   render();
   function find(node, name) { if (!node || typeof node !== 'object') return; if (name in (node.props || {})) return node; for (const child of node.children || []) { const found = find(child, name); if (found) return found; } }
-  return { state, requests, changes, flush, update, tick, frame, key, keyup, visible, page: () => find(tree, 'data-dsh-suggestions-page')?.children[0], generating: () => tree?.props['data-dsh-suggestions'] === 'generating', status: () => tree?.props['data-dsh-suggestions'] === 'status', close, card: () => components['settings.section']?.Component, registration: name => components[name], text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
+  return { state, requests, changes, flush, update, updateKeys, tick, frame, key, keyup, visible, page: () => find(tree, 'data-dsh-suggestions-page')?.children[0], generating: () => tree?.props['data-dsh-suggestions'] === 'generating', status: () => tree?.props['data-dsh-suggestions'] === 'status', close, card: () => components['settings.section']?.Component, registration: name => components[name], text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
 }
 
 await test('hint follows native placeholder movement, width and skin typography while visible', async () => {
@@ -497,6 +502,97 @@ await test('a saved key configuration drives the composer gestures', async () =>
     await h.key('Tab', { code: 'Tab' });
     assert.equal(h.changes.at(-1), h.state.suggestion);
     assert.equal(typeof h.card(), 'function'); // The settings card is registered beside the overlay.
+  } finally { h.close(); }
+});
+
+await test('accept, generate and optimize obey separate bindings in their own composer states', async () => {
+  const configKeys = {
+    accept: { keys: ['F2'], presses: 1 }, generate: { keys: ['F3'], presses: 2 },
+    optimize: { keys: ['F4'], presses: 2 },
+  };
+  const h = mount({ configKeys });
+  try {
+    await h.flush(); const initial = h.requests.length;
+    await h.key('Tab'); await h.key('Tab');
+    await h.key('F3'); await h.key('F3');
+    assert.equal(h.changes.length, 0); assert.equal(h.requests.length, initial);
+    await h.key('F2'); assert.equal(h.changes.at(-1), h.state.suggestion);
+    await h.key('F2'); await h.key('F2');
+    assert.equal(h.requests.length, initial);
+    await h.key('F4'); assert.equal(h.requests.length, initial);
+    await h.key('F4'); assert.equal(h.requests.at(-1).body.action, 'optimize');
+    h.requests.at(-1).respond({ ok: true, value: { status: 'ready', prompt: '优化后的草稿' } });
+    await h.flush(); assert.equal(h.state.input.draft, '优化后的草稿');
+    await h.update({ input: { ...h.state.input, draft: '' } });
+    await h.key('Escape'); const before = h.requests.length;
+    await h.key('F4'); await h.key('F4'); assert.equal(h.requests.length, before);
+    await h.key('F3'); assert.equal(h.requests.length, before);
+    await h.key('F3'); assert.equal(h.requests.length, before + 1);
+    assert.equal(h.requests.at(-1).body.manual, true);
+  } finally { h.close(); }
+});
+
+await test('double acceptance and single optimization keep independent press counts', async () => {
+  const h = mount({ configKeys: { accept: { keys: ['F2'], presses: 2 }, optimize: { keys: ['F3'], presses: 1 } } });
+  try {
+    await h.flush(); const before = h.requests.length;
+    await h.key('F2'); assert.equal(h.changes.length, 0); assert.equal(h.visible(), true);
+    await h.key('F2'); assert.equal(h.changes.at(-1), h.state.suggestion);
+    await h.key('F3'); assert.equal(h.requests.length, before + 1);
+    assert.equal(h.requests.at(-1).body.action, 'optimize');
+  } finally { h.close(); }
+});
+
+await test('changing only generation keys resets a partial gesture and preserves acceptance and optimization', async () => {
+  const h = mount({ suggestion: '' });
+  try {
+    await h.flush(); const before = h.requests.length;
+    await h.key('Tab');
+    await h.updateKeys({ generate: { keys: ['F6'], presses: 2 } });
+    await h.key('F6'); assert.equal(h.requests.length, before);
+    await h.key('Tab'); await h.key('Tab'); assert.equal(h.requests.length, before);
+    await h.key('F6'); await h.key('F6'); assert.equal(h.requests.length, before + 1);
+    h.state.suggestion = '独立生成的建议'; // The host caches a successful manual generation for polling.
+    h.requests.at(-1).respond({ ok: true, value: { status: 'ready', turn: 1, suggestions: ['独立生成的建议'] } });
+    await h.flush(); assert.equal(h.visible(), true, JSON.stringify({ text: h.text(), generating: h.generating(), status: h.status(), input: h.state.input }));
+    await h.key('Tab'); assert.equal(h.changes.at(-1), '独立生成的建议');
+    h.advance(501); await h.key('Tab'); await h.key('Tab');
+    assert.equal(h.requests.at(-1).body.action, 'optimize');
+  } finally { h.close(); }
+});
+
+await test('generation and paging use their saved press counts rather than key type', async () => {
+  for (const action of ['generate', 'next']) {
+    const configKeys = action === 'generate' ? { generate: { keys: ['F6'], presses: 1 } }
+      : { next: { keys: ['Alt+ArrowDown'], presses: 2 } };
+    const h = mount({ suggestion: '', configKeys });
+    try {
+      await h.flush(); const before = h.requests.length;
+      if (action === 'generate') await h.key('F6');
+      else {
+        await h.key('ArrowDown', { altKey: true }); assert.equal(h.requests.length, before);
+        h.advance(150); await h.key('ArrowDown', { altKey: true });
+      }
+      assert.equal(h.requests.length, before + 1); assert.equal(h.requests.at(-1).body.manual, true);
+    } finally { h.close(); }
+  }
+});
+
+await test('double chords survive releasing and pressing their modifiers between strokes', async () => {
+  const h = mount({ suggestion: '', configKeys: { generate: { keys: ['Control+Shift+KeyG'], presses: 2 } } });
+  try {
+    await h.flush(); const before = h.requests.length;
+    for (let i = 0; i < 2; i++) {
+      await h.key('Control', { code: 'ControlLeft', ctrlKey: true });
+      await h.key('Shift', { code: 'ShiftLeft', ctrlKey: true, shiftKey: true });
+      await h.key('g', { code: 'KeyG', ctrlKey: true, shiftKey: true });
+      await h.keyup('g', { code: 'KeyG', ctrlKey: true, shiftKey: true });
+      await h.keyup('Shift', { code: 'ShiftLeft', ctrlKey: true });
+      await h.keyup('Control', { code: 'ControlLeft' });
+      if (i === 0) assert.equal(h.requests.length, before);
+      h.advance(150);
+    }
+    assert.equal(h.requests.length, before + 1); assert.equal(h.requests.at(-1).body.manual, true);
   } finally { h.close(); }
 });
 
