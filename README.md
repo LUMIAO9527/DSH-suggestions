@@ -7,13 +7,13 @@
 **Desktop**：在插件管理中从 GitHub 安装，填写：
 
 ```text
-github:LUMIAO9527/DSH-suggestions#v0.6.5
+github:LUMIAO9527/DSH-suggestions#v0.6.6
 ```
 
 **Web / CLI**：
 
 ```sh
-dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.5
+dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.6
 ```
 
 ## 使用
@@ -34,7 +34,7 @@ dsh plugin --profile web add github:LUMIAO9527/DSH-suggestions#v0.6.5
 
 在 DSH「设置 → 输入框建议」调整快捷键，也可从「设置 → 内置插件 → 输入框建议」进入。采纳建议、空框生成、优化草稿、下一条和上一条分别录制。
 
-点击某项的“录制”，按一次或连按两次快捷键，自动识别单击、双击及组合键，再点“保存更改”。录制时按 `Esc` 取消。点 `…` 可单独重录、添加或移除备用键；同一动作的按键共用单击／双击方式。设置页可恢复默认按键。
+点击某项的“录制”，按一次或连按两次快捷键，自动识别单击、双击及组合键，再点“保存更改”。录制结果替换该项快捷键；录制时按 `Esc` 取消。设置页可恢复默认按键。
 
 ## 超时设置
 

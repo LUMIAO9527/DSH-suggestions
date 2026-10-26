@@ -1,6 +1,6 @@
 {
   "name": "dsh-suggestions",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "private": true,
   "description": "为 DeepSeek Harness 提供后续提示词建议和草稿优化。",
   "type": "module",
