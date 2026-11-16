@@ -776,7 +776,8 @@ const CARD_CATALOG = {
 
 function mountSettings(initial = {}) {
   const state = { language: 'zh', keys: initial.keys ?? null, model: initial.model ?? null, catalog: initial.catalog ?? CARD_CATALOG,
-    catalogFails: initial.catalogFails === true, rejectCode: initial.rejectCode || '', saves: [], catalogCalls: 0 };
+    catalogFails: initial.catalogFails === true, rejectCode: initial.rejectCode || '', saves: [], catalogCalls: 0,
+    release: initial.release ?? { current: '0.8.5', latest: '0.8.5', newer: false }, updateFails: initial.updateFails === true, updateCalls: 0 };
   const hooks = [];
   const same = (a, b) => a && b && a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
   let cursor = 0, dirty = false, effects = [], tree, plugin;
@@ -804,6 +805,11 @@ function mountSettings(initial = {}) {
         if (body.model !== undefined) state.model = body.model;
       }
       return { ok: true, json: async () => ({ ok: true, value: { keys: state.keys ?? {}, model: state.model ?? null, defaults: CARD_DEFAULTS } }) };
+    }
+    if (body.action === 'update') {
+      state.updateCalls++;
+      if (state.updateFails) return { ok: false, json: async () => ({ ok: false, error: { message: 'offline' } }) };
+      return { ok: true, json: async () => ({ ok: true, value: state.release }) };
     }
     if (body.action === 'catalog') {
       state.catalogCalls++;
@@ -869,7 +875,7 @@ function mountSettings(initial = {}) {
   const openModel = async () => { modelTrigger().props.onClick(); await flush(); };
   const openEffort = async () => { effortTrigger().props.onClick(); await flush(); };
   render();
-  return { state, flush, findAll, find, children, modelTrigger, effortTrigger, labelOf, optionLabels, groupLabels, pickOption, openModel, openEffort, button, close() { timers.clear(); } };
+  return { state, flush, findAll, find, children, modelTrigger, effortTrigger, updateTrigger: () => triggerBy('data-sug-update'), labelOf, optionLabels, groupLabels, pickOption, openModel, openEffort, button, close() { timers.clear(); } };
 }
 
 await test('settings card lists the composer catalog and commits every model or effort change', async () => {
@@ -936,5 +942,38 @@ await test('a saved model that left the catalog stays visible and a rejected wri
     assert.equal(h.state.saves.at(-1).model.model, 'deepseek-v4'); // the attempt is recorded
     assert.equal(h.find(node => node.props?.className === 'sug-feedback').props['data-state'], 'error');
     assert.match(JSON.stringify(h.find(node => node.props?.className === 'sug-feedback')), /当前不可用/);
+  } finally { h.close(); }
+});
+
+await test('settings card checks the published release and explains the result', async () => {
+  const h = mountSettings({ release: { current: '0.8.5', latest: '0.9.0', newer: true } });
+  try {
+    await h.flush();
+    const row = () => h.find(node => node.props?.['data-row'] === 'update');
+    assert.ok(row(), 'the version row renders');
+    assert.equal(h.labelOf(row()), '版本点右侧按钮检查公开版本。');
+    assert.equal(h.labelOf(h.updateTrigger()), '检查更新');
+    h.updateTrigger().props.onClick();
+    await h.flush();
+    assert.equal(h.state.updateCalls, 1);
+    assert.equal(h.labelOf(row()), '版本公开版本 0.9.0，当前 0.8.5；打包后重装即可升级。');
+    assert.equal(h.labelOf(h.updateTrigger()), '检查更新');
+  } finally { h.close(); }
+});
+
+await test('a failed release check says so and offers a retry', async () => {
+  const h = mountSettings({ updateFails: true });
+  try {
+    await h.flush();
+    h.updateTrigger().props.onClick();
+    await h.flush();
+    assert.equal(h.state.updateCalls, 1);
+    const row = () => h.find(node => node.props?.['data-row'] === 'update');
+    assert.equal(row().props['data-state'], 'error', h.labelOf(row()));
+    assert.equal(h.labelOf(row()).includes('检查失败'), true, 'row text: ' + h.labelOf(row()));
+    assert.ok(h.button('sug-inline-retry'), 'retry stays reachable');
+    h.updateTrigger().props.onClick();
+    await h.flush();
+    assert.equal(h.state.updateCalls, 2);
   } finally { h.close(); }
 });

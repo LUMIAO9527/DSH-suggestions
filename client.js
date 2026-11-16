@@ -727,6 +727,9 @@ window.__ModuleLoader__.load({
       [data-dsh-suggestions-settings] .sug-record:hover:enabled{background:var(--sug-hover);color:var(--sug-text)}
       [data-dsh-suggestions-settings] .sug-record[aria-pressed=true]{border-color:transparent;background:var(--sug-text);color:var(--dsw-alias-bg-base)}
       [data-dsh-suggestions-settings] .sug-record[aria-pressed=true]:hover:enabled{background:color-mix(in srgb,var(--sug-text) 86%,var(--sug-surface));color:var(--dsw-alias-bg-base)}
+[data-dsh-suggestions-settings] .sug-update-field{justify-content:flex-end}
+[data-dsh-suggestions-settings] .sug-update{min-height:32px;padding:5px 12px;border:1px solid var(--sug-border);border-radius:var(--sug-control-radius);background:var(--sug-field);color:var(--sug-muted);white-space:nowrap}
+[data-dsh-suggestions-settings] .sug-update:hover:enabled{background:var(--sug-hover);color:var(--sug-text)}
       [data-dsh-suggestions-settings] kbd{font:inherit;font-size:12px;font-weight:400;min-width:24px;text-align:center;white-space:nowrap}
       [data-dsh-suggestions-settings] .sug-key-separator{color:var(--sug-muted);font-size:11px}
       [data-dsh-suggestions-settings] .sug-feedback{display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--sug-muted);font-size:12px;line-height:1.6}
@@ -812,6 +815,15 @@ window.__ModuleLoader__.load({
         rejected: '这个选择当前不可用，请重新选择。',
         modelSearch: '搜索模型',
         modelEmpty: '没有匹配的模型',
+        update: '版本',
+        updateHint: '检查 GitHub 上已发布的版本；插件不会自行替换文件。',
+        updateIdle: '点右侧按钮检查公开版本。',
+        updateChecking: '正在检查…',
+        updateFailed: '检查失败',
+        updateButton: '检查更新',
+        updateSame: (latest, current) => '当前 ' + current + '，与公开版本一致。',
+        updateBehind: (latest, current) => '公开版本 ' + latest + '，当前 ' + current + '；打包后重装即可升级。',
+        updateAhead: (latest, current) => '当前 ' + current + '，高于公开最新 ' + latest + '（这一版未发布）。',
       } : {
         title: 'DSH-Suggestions',
         features: ['Follow-up suggestions', 'Draft improvement', 'Shortcuts'],
@@ -855,6 +867,15 @@ window.__ModuleLoader__.load({
         rejected: 'This choice is unavailable. Choose another.',
         modelSearch: 'Search models',
         modelEmpty: 'No matching models',
+        update: 'Version',
+        updateHint: 'Checks the version published on GitHub. The plugin never swaps its own files.',
+        updateIdle: 'Use the button to check the published version.',
+        updateChecking: 'Checking…',
+        updateFailed: 'Check failed',
+        updateButton: 'Check for updates',
+        updateSame: (latest, current) => 'Running ' + current + ', same as the published release.',
+        updateBehind: (latest, current) => 'Published ' + latest + ', running ' + current + '; repack and reinstall to upgrade.',
+        updateAhead: (latest, current) => 'Running ' + current + ', ahead of the published ' + latest + ' (not released).',
       };
       const ROWS = ['accept', 'generate', 'optimize', 'next', 'prev'].map(name => [name, TEXT[name], TEXT[name + 'Note']]);
       const [draft, setDraft] = useState(null);
@@ -874,6 +895,7 @@ window.__ModuleLoader__.load({
       const [capture, setCapture] = useState(null);
       const [status, setStatus] = useState('');
       const [busy, setBusy] = useState(false);
+      const [release, setRelease] = useState({ status: 'idle' });
       const draftRef = useRef(draft);
       const savedRef = useRef(savedKeys);
       const modelRef = useRef(model);
@@ -1220,6 +1242,34 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sug-menu-list' },
           openMenu === 'model' ? renderModelOptions() : renderEffortOptions(),
           openMenu === 'model' && visibleGroups.length === 0 && !showStale ? h('div', { className: 'sug-menu-empty' }, TEXT.modelEmpty) : null)) : null;
+      const runReleaseCheck = async () => {
+        if (release.status === 'checking') return;
+        setRelease({ status: 'checking' });
+        try {
+          const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'update', force: true }) });
+          const payload = await response.json();
+          if (!payload?.ok) throw new Error(payload?.error?.message || 'update check failed');
+          setRelease({ status: 'done', ...payload.value });
+        } catch (error) {
+          setRelease({ status: 'error', message: error?.message || '' });
+        }
+      };
+      const releaseRow = () => {
+        const state = release.status;
+        const note = state === 'checking' ? TEXT.updateChecking
+          : state === 'error' ? TEXT.updateFailed + (release.message ? '（' + release.message + '）' : '')
+            : state === 'done' ? (release.newer ? TEXT.updateBehind(release.latest, release.current)
+              : release.latest === release.current ? TEXT.updateSame(release.latest, release.current) : TEXT.updateAhead(release.latest, release.current))
+              : TEXT.updateIdle;
+        return h('div', { className: 'sug-row', 'data-row': 'update', 'data-state': state },
+          h('div', null,
+            h('div', { className: 'sug-row-title' }, TEXT.update),
+            h('div', { className: 'sug-row-note' }, note,
+              state === 'error' ? h('button', { type: 'button', className: 'sug-inline-retry', onClick: runReleaseCheck }, TEXT.retry) : null)),
+          h('div', { className: 'sug-field sug-update-field' },
+            h('button', { type: 'button', className: 'sug-update', 'data-sug-update': '', disabled: state === 'checking' || loading,
+              onClick: runReleaseCheck }, state === 'checking' ? TEXT.updateChecking : TEXT.updateButton)));
+      };
       const startRecording = name => {
         setCapture(null); setRecording(recording === name ? '' : name); setStatus('');
       };
@@ -1260,6 +1310,8 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sug-rows' }, ROWS.map(([name, label, note]) => h('div', { key: name, className: 'sug-row', 'data-action': name, 'data-recording': recording === name },
           h('div', null, h('div', { className: 'sug-row-title' }, label), h('div', { className: 'sug-row-note' }, recording === name ? capture?.presses === 1 ? TEXT.wait + ' · Esc ' + TEXT.stop : TEXT.cancel : note)),
           shortcut(name, label)))),
+        h('div', { className: 'sug-section-heading' }, h('h3', null, TEXT.update), h('span', null, TEXT.updateHint)),
+        h('div', { className: 'sug-rows', 'data-sug-release': '' }, releaseRow()),
         h('div', { className: 'sug-feedback', 'data-state': error ? 'error' : status, role: error ? 'alert' : 'status', 'aria-live': 'polite' },
           message ? h('span', null, message) : null,
           status === 'loadFailed' ? h('button', { type: 'button', className: 'sug-retry', onClick: () => load() }, TEXT.retry) : null),

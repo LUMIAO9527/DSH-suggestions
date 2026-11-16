@@ -76,6 +76,54 @@ export function normalizeModel(input) {
 
 // Shortcut keys stay at the top level so builds without model selection keep
 // reading the file; `model` is an additive field those builds simply ignore.
+const UPDATE_URL = 'https://api.github.com/repos/LUMIAO9527/DSH-suggestions/releases/latest';
+const UPDATE_TTL_MS = 10 * 60 * 1000;
+const updateState = { at: 0, value: undefined };
+
+function versionParts(value) {
+  return String(value ?? '').replace(/^v/i, '').split(/[.+-]/).slice(0, 3).map(part => {
+    const number = Number.parseInt(part, 10);
+    return Number.isFinite(number) ? number : 0;
+  });
+}
+
+/** 1 when latest is ahead of current, -1 when behind, 0 when equal. */
+export function compareVersions(latest, current) {
+  const a = versionParts(latest), b = versionParts(current);
+  for (let index = 0; index < 3; index++) {
+    if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) > (b[index] || 0) ? 1 : -1;
+  }
+  return 0;
+}
+
+/** The published release behind the settings card's check; cached so the page can reopen cheaply. */
+async function checkPublishedVersion({ force = false } = {}) {
+  if (!force && updateState.value && Date.now() - updateState.at < UPDATE_TTL_MS) return updateState.value;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('update check timed out')), 6000);
+  try {
+    const response = await fetch(UPDATE_URL, {
+      headers: { accept: 'application/vnd.github+json', 'user-agent': `dsh-suggestions/${VERSION}` },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`GitHub responded ${response.status}`);
+    const release = await response.json();
+    const latest = String(release?.tag_name ?? '').replace(/^v/i, '');
+    if (!/^\d+\.\d+\.\d+/.test(latest)) throw new Error('release has no version tag');
+    const value = {
+      current: VERSION,
+      latest,
+      newer: compareVersions(latest, VERSION) > 0,
+      url: typeof release?.html_url === 'string' ? release.html_url : '',
+      publishedAt: typeof release?.published_at === 'string' ? release.published_at : '',
+      checkedAt: new Date().toISOString(),
+    };
+    updateState.at = Date.now();
+    updateState.value = value;
+    return value;
+  } finally { clearTimeout(timer); }
+}
+
 function readConfig(file) {
   let stored = {};
   try {
@@ -515,6 +563,10 @@ export function apply(ctx, config = {}, runtime = {}) {
       if (body?.action === 'catalog') {
         try { return noStore({ ok: true, value: await buildCatalog() }); }
         catch (error) { return noStore({ ok: false, error: { message: error.message } }, 503); }
+      }
+      if (body?.action === 'update') {
+        try { return noStore({ ok: true, value: await checkPublishedVersion({ force: body.force === true }) }); }
+        catch (error) { return noStore({ ok: false, error: { message: error.message || 'update check failed' } }, 503); }
       }
       let sessionId;
       try { sessionId = boundedText(body?.sessionId, 'sessionId', 240, true); } catch (error) { return noStore({ ok: false, error: { message: error.message } }, 400); }

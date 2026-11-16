@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events';
 import { apply, summarize, normalizeKeys } from './index.js';
 import { LIMITS, NOVELTY_SYSTEM, contextExcerpt, validateTurns, suggestionInput, parseSuggestion, parseSuggestionBatch, parseNovelty, parseNoveltySelection, parseRewrite, optimizeMaxTokens } from './prompt-core.mjs';
 import { generateSuggestions } from './suggestion-engine.mjs';
+import { VERSION } from './version.mjs';
 
 const scratch = resolve(dirname(fileURLToPath(import.meta.url)), './_wip/tests');
 mkdirSync(scratch, { recursive: true });
@@ -173,6 +174,41 @@ try {
     assert.equal(result.suggestion, candidates[0]); assert.deepEqual(result.candidates, candidates.slice(0, 1));
   });
 
+  await test('the release check compares the published tag and caches the answer', async () => {
+    const original = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async url => {
+      calls.push(String(url));
+      return { ok: true, status: 200, json: async () => ({ tag_name: 'v9.9.9', html_url: 'https://example.test/releases/v9.9.9', published_at: '2026-11-17T00:00:00Z' }) };
+    };
+    const h = harness();
+    try {
+      const first = await h.api({ action: 'update', force: true });
+      assert.equal(first.ok, true);
+      assert.equal(first.value.current, VERSION);
+      assert.equal(first.value.latest, '9.9.9');
+      assert.equal(first.value.newer, true);
+      assert.equal(first.value.url, 'https://example.test/releases/v9.9.9');
+      const cached = await h.api({ action: 'update' });
+      assert.equal(cached.value.latest, '9.9.9');
+      assert.equal(calls.length, 1);
+      globalThis.fetch = async () => { throw new Error('offline'); };
+      const failed = await h.api({ action: 'update', force: true });
+      assert.equal(failed.ok, false);
+      assert.match(failed.error.message, /offline/);
+    } finally { globalThis.fetch = original; h.close(); }
+  });
+
+  await test('an installed build ahead of the published release is not offered as an update', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ tag_name: 'v0.7.0' }) });
+    const h = harness();
+    try {
+      const value = await h.api({ action: 'update', force: true });
+      assert.equal(value.value.newer, false);
+      assert.equal(value.value.latest, '0.7.0');
+    } finally { globalThis.fetch = original; h.close(); }
+  });
   await test('a malformed duplicate review keeps the candidate instead of failing the request', async () => {
     const h = harness({ novelty: 'not JSON' });
     try {
