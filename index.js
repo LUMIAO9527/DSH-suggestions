@@ -63,20 +63,36 @@ function keyConflict(keys) {
     .some(([a, b]) => keys[a].keys.some(key => keys[b].keys.includes(key)));
 }
 
-function readKeys(file) {
-  try {
-    const keys = normalizeKeys(JSON.parse(readFileSync(file, 'utf8')));
-    return keyConflict(keys) ? normalizeKeys(DEFAULT_KEYS) : keys;
-  }
-  catch { return normalizeKeys(DEFAULT_KEYS); }
+/** Model used for generation, stored next to the shortcut bindings. */
+export function normalizeModel(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const provider = typeof input.provider === 'string' ? input.provider.trim() : '';
+  const model = typeof input.model === 'string' ? input.model.trim() : '';
+  if (!provider || !model || provider.length > 120 || model.length > 240) return undefined;
+  const effort = typeof input.reasoningEffort === 'string' ? input.reasoningEffort.trim() : '';
+  if (effort.length > 80) return undefined;
+  return { provider, model, ...(effort ? { reasoningEffort: effort } : {}) };
 }
 
-function writeKeys(input, file) {
+// Shortcut keys stay at the top level so builds without model selection keep
+// reading the file; `model` is an additive field those builds simply ignore.
+function readConfig(file) {
+  let stored = {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) stored = parsed;
+  } catch { /* a missing or unreadable file falls back to defaults */ }
+  const keys = normalizeKeys(stored);
+  return { keys: keyConflict(keys) ? normalizeKeys(DEFAULT_KEYS) : keys, model: normalizeModel(stored.model) };
+}
+
+function writeConfig(file, { keys: input, model }) {
   const keys = normalizeKeys(input);
   if (keyConflict(keys)) throw new Error('Conflicting shortcuts in the empty composer');
+  const next = normalizeModel(model);
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(keys, null, 2)}\n`, { mode: 0o600 });
-  return keys;
+  writeFileSync(file, `${JSON.stringify({ ...keys, ...(next ? { model: next } : {}) }, null, 2)}\n`, { mode: 0o600 });
+  return { keys, model: next };
 }
 const noStore = (body, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
 
@@ -173,6 +189,7 @@ export function apply(ctx, config = {}, runtime = {}) {
   const effortCache = new Map();
   const bridgeToken = randomBytes(24).toString('hex');
   let disposed = false;
+  let catalogCache;
 
   function remember(map, key, value) {
     map.delete(key);
@@ -199,14 +216,62 @@ export function apply(ctx, config = {}, runtime = {}) {
     throw new Error('no default model selected');
   }
 
-  async function effortFor(llm, route, signal) {
-    const key = `${route.provider}/${route.model}`;
+  // The settings card mirrors the composer model picker: same providers, same
+  // catalog order, same per-provider failures. Only metadata the picker shows
+  // is retained, and effort lists are advisory for this plugin's own calls.
+  async function buildCatalog() {
+    if (catalogCache && Date.now() - catalogCache.at < 60_000) return catalogCache.value;
+    const llm = ctx.get('llm');
+    if (typeof llm?.listProviders !== 'function' || typeof llm.listModels !== 'function') throw new Error('model catalog unavailable');
+    const providers = llm.listProviders();
+    if (!Array.isArray(providers)) throw new Error('model catalog unavailable');
+    const entries = await Promise.all(providers.map(async provider => {
+      const name = typeof provider?.name === 'string' && provider.name ? provider.name : provider?.id;
+      if (typeof provider?.id !== 'string' || !provider.id || !name) return undefined;
+      try {
+        const models = await llm.listModels(provider.id);
+        if (!Array.isArray(models)) throw new Error('model catalog unavailable');
+        const list = await Promise.all(models.map(async model => {
+          let reasoning;
+          try {
+            const info = await llm.resolveModelInfo?.(provider.id, model.id);
+            const efforts = (info?.reasoning?.efforts || []).flatMap(effort => typeof effort?.id === 'string' && effort.id
+              ? [{ id: effort.id, name: typeof effort.name === 'string' && effort.name ? effort.name : effort.id, ...(typeof effort.description === 'string' ? { description: effort.description } : {}) }]
+              : []);
+            if (efforts.length) reasoning = { efforts, ...(typeof info.reasoning.defaultEffort === 'string' ? { defaultEffort: info.reasoning.defaultEffort } : {}) };
+          } catch { /* effort metadata is optional for generation */ }
+          return { id: model.id, name: typeof model.name === 'string' && model.name ? model.name : model.id, ...(reasoning ? { reasoning } : {}) };
+        }));
+        return { kind: 'group', group: { id: provider.id, name, models: list } };
+      } catch (error) {
+        return { kind: 'failure', failure: { id: provider.id, name, message: error instanceof Error ? error.message : String(error) } };
+      }
+    }));
+    const groups = entries.flatMap(entry => entry?.kind === 'group' ? [entry.group] : []).filter(group => group.models.length > 0);
+    const value = { groups, failures: entries.flatMap(entry => entry?.kind === 'failure' ? [entry.failure] : []) };
+    catalogCache = { at: Date.now(), value };
+    return value;
+  }
+
+  // A saved selection only wins while its provider is still routed; otherwise
+  // the session route and the deployment default keep working as before.
+  function savedRoute(llm, saved) {
+    if (!saved) return undefined;
+    const providers = typeof llm?.listProviders === 'function' ? llm.listProviders() : [];
+    if (!Array.isArray(providers) || !providers.some(provider => provider?.id === saved.provider)) return undefined;
+    return { provider: saved.provider, model: saved.model };
+  }
+
+  async function effortFor(llm, route, signal, preferred) {
+    const key = `${route.provider}/${route.model}#${preferred || ''}`;
     if (effortCache.has(key)) return effortCache.get(key);
     let effort;
     try {
       const info = await abortable(llm.resolveModelInfo?.(route.provider, route.model, signal), signal);
       const efforts = info?.reasoning?.efforts || [];
-      for (const id of ['none', 'off', 'minimal', 'low']) {
+      const chosen = preferred && efforts.find(entry => entry.id === preferred);
+      if (chosen) effort = chosen.id;
+      else for (const id of ['none', 'off', 'minimal', 'low']) {
         const match = efforts.find(entry => entry.id?.toLowerCase() === id);
         if (match) { effort = match.id; break; }
       }
@@ -227,10 +292,13 @@ export function apply(ctx, config = {}, runtime = {}) {
     try {
       const llm = ctx.get('llm');
       if (typeof llm?.stream !== 'function') throw new Error('llm service unavailable');
-      // With a session, use only that session's route. Without one, the documented
-      // global default is deterministic and never borrowed from another window.
-      const selected = route || (sessionId ? (await abortable(readSession(sessionId), controller.signal)).route : undefined) || defaultRoute();
-      const effort = await effortFor(llm, selected, controller.signal);
+      // An explicit selection in the settings wins while its provider is routed.
+      // Otherwise the session route stays authoritative, and a call without a
+      // session falls back to the documented global default.
+      const saved = readConfig(configFile).model;
+      const stored = savedRoute(llm, saved);
+      const selected = stored || route || (sessionId ? (await abortable(readSession(sessionId), controller.signal)).route : undefined) || defaultRoute();
+      const effort = await effortFor(llm, selected, controller.signal, stored ? saved?.reasoningEffort : undefined);
       controller.signal.throwIfAborted();
       const collect = async () => {
         const chunks = [];
@@ -421,9 +489,32 @@ export function apply(ctx, config = {}, runtime = {}) {
       try { body = await request.json(); } catch { return noStore({ ok: false, error: { message: 'body is not JSON' } }, 400); }
       if (body?.action === 'config') {
         try {
-          if (body.keys === undefined) return noStore({ ok: true, value: { keys: readKeys(configFile), defaults: normalizeKeys(DEFAULT_KEYS) } });
-          return noStore({ ok: true, value: { keys: writeKeys(body.keys, configFile), defaults: normalizeKeys(DEFAULT_KEYS) } });
+          const current = readConfig(configFile);
+          if (body.keys === undefined && body.model === undefined) {
+            return noStore({ ok: true, value: { keys: current.keys, defaults: normalizeKeys(DEFAULT_KEYS), model: current.model } });
+          }
+          let model = current.model;
+          if (body.model !== undefined) {
+            if (body.model === null) model = undefined;
+            else {
+              const candidate = normalizeModel(body.model);
+              if (!candidate) return noStore({ ok: false, error: { code: 'invalid-model', message: 'invalid model selection' } }, 400);
+              const catalog = await buildCatalog();
+              const available = catalog.groups.find(group => group.id === candidate.provider)?.models.find(entry => entry.id === candidate.model);
+              if (!available) return noStore({ ok: false, error: { code: 'model-unavailable', message: 'model is not in the current catalog' } }, 400);
+              if (candidate.reasoningEffort && !(available.reasoning?.efforts || []).some(effort => effort.id === candidate.reasoningEffort)) {
+                return noStore({ ok: false, error: { code: 'effort-unavailable', message: 'reasoning effort is not advertised by this model' } }, 400);
+              }
+              model = candidate;
+            }
+          }
+          const written = writeConfig(configFile, { keys: body.keys === undefined ? current.keys : body.keys, model });
+          return noStore({ ok: true, value: { keys: written.keys, defaults: normalizeKeys(DEFAULT_KEYS), model: written.model } });
         } catch (error) { return noStore({ ok: false, error: { message: error.message } }, 400); }
+      }
+      if (body?.action === 'catalog') {
+        try { return noStore({ ok: true, value: await buildCatalog() }); }
+        catch (error) { return noStore({ ok: false, error: { message: error.message } }, 503); }
       }
       let sessionId;
       try { sessionId = boundedText(body?.sessionId, 'sessionId', 240, true); } catch (error) { return noStore({ ok: false, error: { message: error.message } }, 400); }

@@ -1,4 +1,4 @@
-# DSH-suggestions MCP
+# DSH-Suggestions MCP
 
 | 工具 | 功能 | 必填参数 |
 |---|---|---|
@@ -7,7 +7,7 @@
 
 `suggest_next_prompt` 可补充 `userRequest`（当前请求）和 `recentTurns`（此前的问答，按时间顺序，最多 6 轮，每轮包含 `user` 和可选的 `assistant` 文本）。也支持 `recentUserMessages`（最近的用户消息）。`optimize_prompt` 可补充 `context`（对话上下文）。
 
-复用 DSH 时，可传入 `sessionId` 使用指定会话的模型；省略时使用 DSH 默认模型。
+复用 DSH 时，可传入 `sessionId` 使用指定会话的模型；省略时使用 DSH 默认模型。若已在 DSH-Suggestions 设置里选择生成模型，则两处都优先使用该模型；其模型或提供方不可用时按会话模型、默认模型的顺序回退。
 
 ## 接入 DSH
 

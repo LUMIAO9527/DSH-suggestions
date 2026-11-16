@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "DSH-suggestions",
+    "title": "DSH-Suggestions",
     "description": "Double Tab / Right in an empty composer to generate; press once to accept. Browse with Alt+Down / Up or the paging buttons. With a draft, double-press to improve it."
   },
   "suggestion.label": "Suggested follow-up"

@@ -1,6 +1,27 @@
 window.__ModuleLoader__.load({
   id: 'dsh-suggestions',
   factory(require) {
+    /* settings-icon:start */
+    const SETTINGS_ICON_MASK = 'url("data:image/svg+xml,' + encodeURIComponent("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" role=\"img\" aria-label=\"DSH-Suggestions\">\r\n  <path d=\"M12.5 4.5H7A3.5 3.5 0 0 0 3.5 8v7A3.5 3.5 0 0 0 7 18.5h1v3l4-3h5A3.5 3.5 0 0 0 20.5 15v-2.5\"/>\r\n  <path d=\"m18 2 1.2 3.8L23 7l-3.8 1.2L18 12l-1.2-3.8L13 7l3.8-1.2ZM7.5 11h3m-3 3.5h7\"/>\r\n</svg>\r\n") + '")';
+    function installSettingsIcon(ctx) {
+      if (typeof document === 'undefined' || typeof MutationObserver === 'undefined' || !ctx.effect) return;
+      ctx.effect(() => {
+        const mark = "dsh-suggestions", label = "DSH-Suggestions";
+        const style = document.createElement('style');
+        const selector = 'button[data-dsh-plugin-icon="' + mark + '"] svg';
+        style.textContent = selector + '{width:16px;height:16px;flex-shrink:0;display:block;background:currentColor;mask:' + SETTINGS_ICON_MASK + ' center/contain no-repeat}' + selector + '>*{visibility:hidden}';
+        document.head.appendChild(style);
+        const update = () => {
+          for (const button of document.querySelectorAll('[role="dialog"][data-shortcut-modal="settings"] nav button')) {
+            if (button.textContent.trim() === label) button.setAttribute('data-dsh-plugin-icon', mark);
+          }
+        };
+        const observer = new MutationObserver(update);
+        observer.observe(document.body, { childList: true, subtree: true }); update();
+        return () => { observer.disconnect(); style.remove(); for (const item of document.querySelectorAll('[data-dsh-plugin-icon="' + mark + '"]')) item.removeAttribute('data-dsh-plugin-icon'); };
+      }, 'plugin settings glyph');
+    }
+    /* settings-icon:end */
     const React = require('react');
     const h = React.createElement;
     const { useCallback, useEffect, useLayoutEffect, useRef, useState } = React;
@@ -95,7 +116,7 @@ window.__ModuleLoader__.load({
     }
 
     function keycap(label) {
-      return h('span', { 'aria-hidden': true, style: { display: 'block', border: '1px solid currentColor', borderRadius: 4, padding: '0 5px', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 10, lineHeight: '17px' } }, label);
+      return h('span', { 'aria-hidden': true, className: 'sug-keycap' }, label);
     }
 
     const DEFAULT_KEYS = {
@@ -125,6 +146,15 @@ window.__ModuleLoader__.load({
     function keyConflict(keys) {
       return [['next', 'prev'], ['next', 'accept'], ['next', 'generate'], ['prev', 'accept'], ['prev', 'generate']]
         .some(([a, b]) => keys[a].keys.some(key => keys[b].keys.includes(key)));
+    }
+    // Same shape the host stores: an optional explicit route plus effort.
+    function normalizeModel(input) {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+      const provider = typeof input.provider === 'string' ? input.provider.trim() : '';
+      const model = typeof input.model === 'string' ? input.model.trim() : '';
+      if (!provider || !model) return null;
+      const effort = typeof input.reasoningEffort === 'string' ? input.reasoningEffort.trim() : '';
+      return { provider, model, ...(effort ? { reasoningEffort: effort } : {}) };
     }
     const KEYS_EVENT = 'dsh-suggestions:keys';
     const KEY_LABELS = { Tab: 'Tab', ArrowRight: '→', ArrowLeft: '←', ArrowUp: '↑', ArrowDown: '↓', AltLeft: '左 Alt', AltRight: '右 Alt', Escape: 'Esc', Enter: 'Enter', Space: 'Space', Backspace: 'Backspace' };
@@ -400,10 +430,12 @@ window.__ModuleLoader__.load({
         return () => { cancelled = true; clearTimeout(timer); controller?.abort(); document.removeEventListener('visibilitychange', onVisibility); };
       }, [sessionId, shouldPoll]);
 
-      // Measure the native placeholder itself: mobile layouts and composer skins
-      // own its position, typography and available width, including transitions.
+      // The suggestion shares the composer's coordinate space. Measure its
+      // placeholder when the layout changes, then let both move together.
       useLayoutEffect(() => {
         if (!showing) { setLayout(null); return undefined; }
+        const anchor = anchorRef.current;
+        const card = anchor?.closest?.('[data-composer-card]') ?? anchor?.parentElement;
         let frame;
         let placeholder;
         let oldVisibility = '';
@@ -416,13 +448,15 @@ window.__ModuleLoader__.load({
           }
         };
         const update = () => {
-          const anchor = anchorRef.current;
+          frame = undefined;
           const next = composerPlaceholder(composerEditor(anchor));
           if (next !== placeholder) {
             restore();
+            if (placeholder) resize?.unobserve(placeholder);
             placeholder = next;
             oldVisibility = placeholder?.style.getPropertyValue('visibility') || '';
             oldPriority = placeholder?.style.getPropertyPriority('visibility') || '';
+            if (placeholder) resize?.observe(placeholder);
           }
           const measured = placeholderLayout(anchor, placeholder);
           if (measured) {
@@ -430,11 +464,28 @@ window.__ModuleLoader__.load({
           } else restore();
           const key = JSON.stringify(measured);
           if (key !== previous) { previous = key; setLayout(measured); }
-          frame = window.requestAnimationFrame(update);
         };
+        const schedule = () => {
+          if (frame === undefined) frame = window.requestAnimationFrame(update);
+        };
+        const resize = window.ResizeObserver ? new window.ResizeObserver(schedule) : null;
+        const mutations = window.MutationObserver ? new window.MutationObserver(schedule) : null;
+        if (card) {
+          resize?.observe(card);
+          mutations?.observe(card, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'hidden'] });
+          card.addEventListener?.('transitionend', schedule);
+        }
+        if (document.documentElement) mutations?.observe(document.documentElement, {
+          attributes: true, attributeFilter: ['class', 'data-theme', 'data-color-scheme'],
+        });
+        window.addEventListener('resize', schedule);
         update();
         return () => {
-          window.cancelAnimationFrame(frame);
+          if (frame !== undefined) window.cancelAnimationFrame(frame);
+          resize?.disconnect();
+          mutations?.disconnect();
+          card?.removeEventListener?.('transitionend', schedule);
+          window.removeEventListener('resize', schedule);
           restore();
         };
       }, [showing, sessionId]);
@@ -615,72 +666,112 @@ window.__ModuleLoader__.load({
       }, [sessionId, visible, hintKey, accept, generate, optimize, step, feedback]);
 
       const deck = deckRef.current;
-      const browseButton = (direction, label) => h('button', { type: 'button', 'aria-label': label, title: label,
+      const browseButton = (direction, label) => h('button', { type: 'button', className: 'sug-browse', 'aria-label': label, title: label,
         disabled: direction < 0 ? deck.index <= 0 : generating,
         onMouseDown: event => event.preventDefault(), onClick: () => step(direction),
-        style: { border: 0, background: 'transparent', color: 'inherit', padding: '0 5px', minWidth: 28, minHeight: 0, font: 'inherit', cursor: 'pointer', pointerEvents: 'auto', touchAction: 'manipulation' } }, direction < 0 ? '‹' : '›');
+      }, h('svg', { width: 14, height: 14, viewBox: '0 0 20 20', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, 'aria-hidden': true },
+        h('path', { d: direction < 0 ? 'm12 5-5 5 5 5' : 'm8 5 5 5-5 5', strokeLinecap: 'round', strokeLinejoin: 'round' })));
       return h('div', { ref: anchorRef, 'data-dsh-suggestions': showing && layout ? (visible ? 'hint' : generating ? 'generating' : 'status') : 'anchor', style: showing ? { position: 'absolute', top: 0, left: 0, right: 0, height: 1, padding: 0, border: 0, pointerEvents: 'none', zIndex: 3 } : { display: 'none' } },
         showing && layout ? h('div', { 'data-dsh-suggestions-text': '', style: { ...layout, position: 'absolute', display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none', background: 'transparent', whiteSpace: 'nowrap', overflow: 'hidden' } },
           h('span', { 'aria-hidden': visible ? true : undefined, role: visible ? undefined : 'status', style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, visible ? hint.text : generating ? generatingLabel : feedback?.text),
-          visible && showChip ? h('span', { role: 'button', 'aria-label': '采用这条建议', title: gestureLabel(keys.accept), onMouseDown: event => event.preventDefault(), onClick: accept, style: { display: 'inline-flex', flex: 'none', alignItems: 'center', opacity: 0.65, pointerEvents: 'auto', cursor: 'pointer' } }, keycap(gestureLabel({ ...keys.accept, keys: keys.accept.keys.slice(0, 1) }))) : null,
-          deck.items.length > 0 ? h('span', { 'data-dsh-suggestions-pager': '', style: { flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 0, opacity: 0.7, pointerEvents: 'auto' } },
+          visible && showChip ? h('button', { type: 'button', className: 'sug-accept', 'aria-label': isChinese() ? '采用这条建议' : 'Accept this suggestion', title: gestureLabel(keys.accept), onMouseDown: event => event.preventDefault(), onClick: accept }, keycap(gestureLabel({ ...keys.accept, keys: keys.accept.keys.slice(0, 1) }))) : null,
+          deck.items.length > 0 ? h('span', { 'data-dsh-suggestions-pager': '' },
             browseButton(-1, (isChinese() ? '上一条' : 'Previous') + ' (' + gestureLabel(keys.prev) + ')'),
-            h('span', { 'data-dsh-suggestions-page': '', style: { fontSize: '11px', minWidth: 22, textAlign: 'center' } }, `${deck.index + 1}/${deck.items.length}`),
-            browseButton(1, (isChinese() ? '下一条' : 'Next') + ' (' + gestureLabel(keys.next) + ')')) : null) : null);
+            h('span', { 'data-dsh-suggestions-page': '' }, `${deck.index + 1}/${deck.items.length}`),
+            browseButton(1, (isChinese() ? '下一条' : 'Next') + ' (' + gestureLabel(keys.next) + ')')) : null) : null,
+        h('style', null, COMPOSER_CSS));
     }
 
+    const COMPOSER_CSS = `
+      [data-dsh-suggestions] .sug-accept,[data-dsh-suggestions] .sug-browse{display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;min-height:24px;margin:0;padding:0;border:1px solid transparent;border-radius:9px;background:transparent;color:inherit;font:inherit;line-height:1;cursor:pointer;pointer-events:auto;touch-action:manipulation;transition:background .14s,opacity .14s}
+      [data-dsh-suggestions] .sug-accept:hover,[data-dsh-suggestions] .sug-browse:hover:enabled{background:color-mix(in srgb,currentColor 10%,transparent)}
+      [data-dsh-suggestions] :is(.sug-accept,.sug-browse):focus-visible{outline:2px solid var(--dsw-alias-label-primary);outline-offset:1px}
+      [data-dsh-suggestions] .sug-browse{width:24px}
+      [data-dsh-suggestions] .sug-browse:disabled{opacity:.3;cursor:default}
+      [data-dsh-suggestions] .sug-keycap{display:block;box-sizing:border-box;max-width:140px;min-width:28px;padding:3px 6px;border:1px solid color-mix(in srgb,currentColor 16%,transparent);border-radius:8.25px;background:color-mix(in srgb,currentColor 5%,transparent);overflow:hidden;text-overflow:ellipsis;font:inherit;font-size:10px;line-height:16px}
+      [data-dsh-suggestions-pager]{display:inline-flex;align-items:center;gap:2px;flex:none;pointer-events:auto}
+      [data-dsh-suggestions-page]{min-width:26px;font-size:11px;line-height:24px;text-align:center;font-variant-numeric:tabular-nums}
+      @media(prefers-reduced-motion:reduce){[data-dsh-suggestions] :is(.sug-accept,.sug-browse){transition:none}}
+    `;
+
     const SETTINGS_CSS = `
-      [data-dsh-suggestions-settings]{--sug-text:var(--dsw-alias-label-primary,inherit);--sug-muted:var(--dsw-alias-label-secondary,#999);--sug-border:var(--dsw-alias-border-l2,rgba(127,127,127,.22));--sug-accent:var(--dsw-alias-state-business-primary,#7da7ff);container:dsh-suggestion-settings / inline-size;width:100%;max-width:760px;padding:4px 0 24px;color:var(--sug-text);font:inherit;font-size:14px;line-height:1.5}
+      [data-dsh-suggestions-settings]{--sug-text:var(--dsw-alias-label-primary,CanvasText);--sug-muted:var(--dsw-alias-label-secondary,var(--sug-text));--sug-subtle:var(--dsw-alias-label-tertiary,var(--sug-muted));--sug-surface:var(--dsw-alias-bg-layer-1,Canvas);--sug-field:var(--dsw-alias-bg-module-platform,var(--sug-surface));--sug-border:color-mix(in srgb,var(--sug-text) 11%,transparent);--sug-panel:color-mix(in srgb,var(--sug-field) 52%,var(--sug-surface));--sug-hover:color-mix(in srgb,var(--sug-text) 8%,var(--sug-surface));--sug-control-radius:8px;container:dsh-suggestion-settings / inline-size;box-sizing:border-box;width:100%;max-width:680px;padding:8px 0 24px;color:var(--sug-text);font:inherit;font-size:14px;line-height:1.6}
       [data-dsh-suggestions-settings] *{box-sizing:border-box}
-      [data-dsh-suggestions-settings] .sug-heading{margin:0;font-size:20px;font-weight:600;line-height:1.4;letter-spacing:-.25px}
-      [data-dsh-suggestions-settings] .sug-description{margin:8px 0 22px;color:var(--sug-muted);font-size:13px;line-height:1.7}
-      [data-dsh-suggestions-settings] .sug-section-heading{margin-bottom:14px}
-      [data-dsh-suggestions-settings] .sug-section-heading h3{margin:0 0 5px;font-size:13px;font-weight:600}
-      [data-dsh-suggestions-settings] .sug-section-heading span{display:block;color:var(--sug-muted);font-size:12px;line-height:1.6}
-      [data-dsh-suggestions-settings] .sug-rows{border:1px solid var(--sug-border);border-radius:14px;overflow:hidden;background:color-mix(in srgb,currentColor 2%,transparent)}
-      [data-dsh-suggestions-settings] .sug-row{display:grid;grid-template-columns:minmax(0,1fr) clamp(208px,35cqw,264px);align-items:center;gap:20px;padding:18px 20px;min-height:84px}
+      [data-dsh-suggestions-settings] .sug-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px 20px}
+      [data-dsh-suggestions-settings] .sug-brand{display:flex;align-items:center;gap:10px;min-width:0}
+      [data-dsh-suggestions-settings] .sug-brand-tile{display:grid;place-items:center;width:36px;height:36px;flex:none;border-radius:10px;background:var(--sug-field)}
+      [data-dsh-suggestions-settings] .sug-brand-glyph{display:block;width:21px;height:21px;background:currentColor;mask-repeat:no-repeat;mask-position:center;mask-size:contain}
+      [data-dsh-suggestions-settings] .sug-heading{margin:0;font-size:20px;font-weight:600;line-height:1.4}
+      [data-dsh-suggestions-settings] .sug-features{display:flex;flex-wrap:wrap;gap:6px;min-width:0;margin:0;padding:0;list-style:none}
+      [data-dsh-suggestions-settings] .sug-features li{max-width:100%;padding:2px 8px;border:1px solid var(--sug-border);border-radius:var(--sug-control-radius);background:var(--sug-panel);color:var(--sug-muted);font-size:12px;line-height:18px;overflow-wrap:anywhere}
+      [data-dsh-suggestions-settings] .sug-section-heading{margin:22px 0 10px}
+      [data-dsh-suggestions-settings] .sug-section-heading h3{margin:0 0 3px;font-size:14px;font-weight:600}
+      [data-dsh-suggestions-settings] .sug-section-heading span{display:block;color:var(--sug-subtle);font-size:12px;line-height:1.55}
+      [data-dsh-suggestions-settings] .sug-rows{padding:0 16px;border:1px solid var(--sug-border);border-radius:16px;overflow:hidden;background:var(--sug-surface)}
+      [data-dsh-suggestions-settings] .sug-row{display:grid;grid-template-columns:minmax(0,1fr) clamp(200px,38cqw,256px);align-items:center;gap:16px;padding:12px 0}
       [data-dsh-suggestions-settings] .sug-row+.sug-row{border-top:1px solid var(--sug-border)}
-      [data-dsh-suggestions-settings] .sug-row[data-recording=true]{background:color-mix(in srgb,var(--sug-accent) 7%,transparent)}
-      [data-dsh-suggestions-settings] .sug-row-title{font-weight:600;font-size:14px;line-height:1.5}
-      [data-dsh-suggestions-settings] .sug-row-note{margin-top:4px;color:var(--sug-muted);font-size:12px;line-height:1.6;max-width:32em}
-      [data-dsh-suggestions-settings] button{font-family:inherit;font-size:13px;line-height:1.4;touch-action:manipulation;cursor:pointer;transition:background .15s,border-color .15s,opacity .15s}
+      [data-dsh-suggestions-settings] .sug-row-title{font-weight:500;font-size:14px;line-height:1.5}
+      [data-dsh-suggestions-settings] .sug-row-note{margin-top:3px;color:var(--sug-subtle);font-size:12px;line-height:1.55;max-width:32em;overflow-wrap:anywhere}
+      [data-dsh-suggestions-settings] .sug-row[data-recording=true] .sug-row-note{color:var(--sug-muted)}
+      [data-dsh-suggestions-settings] button{font:inherit;font-size:13px;line-height:1.4;touch-action:manipulation;cursor:pointer;transition:background .14s,border-color .14s,color .14s}
       [data-dsh-suggestions-settings] button:disabled{cursor:default;opacity:.4}
-      [data-dsh-suggestions-settings] button:focus-visible{outline:2px solid var(--sug-accent);outline-offset:3px}
-      [data-dsh-suggestions-settings] .sug-controls{display:grid;grid-template-columns:minmax(0,1fr) 64px;align-items:center;gap:16px;min-width:0;width:100%}
+      [data-dsh-suggestions-settings] button:focus-visible{outline:2px solid var(--sug-text);outline-offset:2px}
+      [data-dsh-suggestions-settings] .sug-controls{display:grid;grid-template-columns:minmax(0,1fr) 64px;align-items:center;gap:12px;min-width:0;width:100%}
       [data-dsh-suggestions-settings] .sug-summary{display:flex;align-items:center;gap:8px;min-width:0;color:var(--sug-muted)}
-      [data-dsh-suggestions-settings] .sug-summary[data-recording=true]{color:var(--sug-accent)}
+      [data-dsh-suggestions-settings] .sug-summary[data-recording=true]{color:var(--sug-text)}
       [data-dsh-suggestions-settings] .sug-bindings{display:flex;flex-wrap:wrap;align-items:center;gap:5px;min-width:0}
       [data-dsh-suggestions-settings] .sug-chord{display:inline-flex;flex-wrap:wrap;align-items:center;gap:3px;min-width:0;max-width:100%}
-      [data-dsh-suggestions-settings] .sug-summary kbd{max-width:100%;padding:2px 6px;border:1px solid var(--sug-border);border-radius:5px;background:var(--dsw-alias-bg-layer-2,transparent);overflow:hidden;text-overflow:ellipsis;color:var(--sug-text)}
-      [data-dsh-suggestions-settings] .sug-count{flex:none;min-width:38px;padding:2px 6px;border-radius:5px;background:color-mix(in srgb,currentColor 7%,transparent);font-size:11px;text-align:center;white-space:nowrap}
-      [data-dsh-suggestions-settings] .sug-record{min-height:38px;width:64px;padding:7px 10px;border:1px solid var(--sug-border);border-radius:8px;background:var(--dsw-alias-bg-layer-2,transparent);color:inherit}
-      [data-dsh-suggestions-settings] .sug-record[aria-pressed=true]{border-color:var(--sug-accent);color:var(--sug-accent)}
-      [data-dsh-suggestions-settings] .sug-record:hover:enabled{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1))}
-      [data-dsh-suggestions-settings] kbd{font:inherit;font-size:12px;font-weight:500;min-width:22px;text-align:center;white-space:nowrap}
+      [data-dsh-suggestions-settings] .sug-summary kbd{max-width:100%;padding:2px 6px;border:1px solid var(--sug-border);border-radius:var(--sug-control-radius);background:var(--sug-field);overflow:hidden;text-overflow:ellipsis;color:var(--sug-text)}
+      [data-dsh-suggestions-settings] .sug-count{flex:none;min-width:36px;padding:3px 6px;border-radius:8px;background:var(--sug-field);color:var(--sug-subtle);font-size:11px;text-align:center;white-space:nowrap}
+      [data-dsh-suggestions-settings] .sug-record{min-height:32px;width:64px;padding:5px 9px;border:1px solid var(--sug-border);border-radius:var(--sug-control-radius);background:var(--sug-field);color:var(--sug-muted)}
+      [data-dsh-suggestions-settings] .sug-record:hover:enabled{background:var(--sug-hover);color:var(--sug-text)}
+      [data-dsh-suggestions-settings] .sug-record[aria-pressed=true]{border-color:transparent;background:var(--sug-text);color:var(--dsw-alias-bg-base)}
+      [data-dsh-suggestions-settings] .sug-record[aria-pressed=true]:hover:enabled{background:color-mix(in srgb,var(--sug-text) 86%,var(--sug-surface));color:var(--dsw-alias-bg-base)}
+      [data-dsh-suggestions-settings] kbd{font:inherit;font-size:12px;font-weight:400;min-width:24px;text-align:center;white-space:nowrap}
       [data-dsh-suggestions-settings] .sug-key-separator{color:var(--sug-muted);font-size:11px}
-      [data-dsh-suggestions-settings] .sug-feedback{display:flex;align-items:center;gap:8px;min-height:42px;margin-top:8px;color:var(--sug-muted);font-size:12px}
-      [data-dsh-suggestions-settings] .sug-feedback:empty{min-height:14px;margin-top:0}
-      [data-dsh-suggestions-settings] .sug-feedback[data-state=saved]{color:var(--dsw-alias-state-success-primary,#55ad7c)}
+      [data-dsh-suggestions-settings] .sug-feedback{display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--sug-muted);font-size:12px;line-height:1.6}
+      [data-dsh-suggestions-settings] .sug-feedback:empty{display:none}
       [data-dsh-suggestions-settings] .sug-feedback[data-state=error]{color:var(--dsw-alias-state-error-primary,#e57676)}
-      [data-dsh-suggestions-settings] .sug-retry{border:0;padding:3px 6px;background:transparent;color:inherit;text-decoration:underline;text-underline-offset:3px}
-      [data-dsh-suggestions-settings] .sug-footer{position:sticky;bottom:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--sug-border);padding:12px 0;background:var(--dsw-alias-bg-layer-2,#292929)}
-      [data-dsh-suggestions-settings] .sug-reset{min-height:38px;padding:8px 0;border:0;background:transparent;color:var(--sug-muted)}
-      [data-dsh-suggestions-settings] .sug-reset:hover:enabled{color:var(--sug-text)}
-      [data-dsh-suggestions-settings] .sug-save{min-height:38px;min-width:96px;padding:9px 18px;border:0;border-radius:9px;font-weight:500;background:var(--dsw-alias-label-primary,#eee);color:var(--dsw-alias-bg-layer-2,#242424)}
-      [data-dsh-suggestions-settings] .sug-save:hover:enabled{opacity:.85}
+      [data-dsh-suggestions-settings] .sug-retry{border:1px solid var(--sug-border);border-radius:var(--sug-control-radius);padding:4px 8px;background:var(--sug-field);color:var(--sug-text)}
+      [data-dsh-suggestions-settings] .sug-field{display:flex;align-items:center;min-width:0;width:100%}
+      [data-dsh-suggestions-settings] .sug-trigger{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-height:36px;padding:6px 10px;border:1px solid var(--sug-border);border-radius:var(--sug-control-radius);background:var(--sug-field);color:var(--sug-text);font:inherit;font-size:13px;line-height:1.5;text-align:left}
+      [data-dsh-suggestions-settings] .sug-trigger:hover:enabled{background:var(--sug-hover)}
+      [data-dsh-suggestions-settings] .sug-trigger:disabled{opacity:.5;cursor:default}
+      [data-dsh-suggestions-settings] .sug-trigger:focus-visible{outline:2px solid var(--sug-text);outline-offset:2px}
+      [data-dsh-suggestions-settings] .sug-trigger[aria-expanded=true]{background:var(--sug-hover);border-color:color-mix(in srgb,var(--sug-text) 18%,transparent)}
+      [data-dsh-suggestions-settings] .sug-trigger-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      [data-dsh-suggestions-settings] .sug-chevron{flex:none;opacity:.65;transition:transform .14s}
+      [data-dsh-suggestions-settings] .sug-trigger[aria-expanded=true] .sug-chevron{transform:rotate(180deg)}
+      [data-dsh-suggestions-settings] .sug-menu{position:fixed;z-index:60;display:flex;flex-direction:column;max-height:min(62vh,400px);padding:8px;border:1px solid var(--sug-border);border-radius:16px;background:var(--sug-surface);box-shadow:0 20px 48px rgba(0,0,0,.34);overflow:hidden;animation:sug-menu-in .12s ease-out}
+      @keyframes sug-menu-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+      [data-dsh-suggestions-settings] .sug-menu-search{flex:none;display:flex;align-items:center;margin:2px 6px 6px;padding:8px 10px;border-bottom:1px solid var(--sug-border)}
+      [data-dsh-suggestions-settings] .sug-menu-search input{flex:1;min-width:0;border:0;background:transparent;color:var(--sug-text);font:inherit;font-size:14px;line-height:1.5;outline:none}
+      [data-dsh-suggestions-settings] .sug-menu-search input::placeholder{color:var(--sug-subtle)}
+      [data-dsh-suggestions-settings] .sug-menu-list{min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--sug-text) 26%,transparent) transparent}
+      [data-dsh-suggestions-settings] .sug-menu-group{padding:10px 12px 4px;color:var(--sug-subtle);font-size:12px;line-height:1.4;letter-spacing:.02em}
+      [data-dsh-suggestions-settings] .sug-menu-group:first-child{padding-top:6px}
+      [data-dsh-suggestions-settings] .sug-menu-option{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:var(--sug-control-radius);background:transparent;color:var(--sug-text);font:inherit;font-size:13px;line-height:1.5;text-align:left;cursor:pointer}
+      [data-dsh-suggestions-settings] .sug-menu-option[data-active=true]{background:var(--sug-hover)}
+      [data-dsh-suggestions-settings] .sug-menu-option:focus-visible{outline:none;background:var(--sug-hover)}
+      [data-dsh-suggestions-settings] .sug-menu-option-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      [data-dsh-suggestions-settings] .sug-menu-option .sug-check{flex:none;opacity:0}
+      [data-dsh-suggestions-settings] .sug-menu-option[aria-selected=true] .sug-check{opacity:.9}
+      [data-dsh-suggestions-settings] .sug-menu-empty{padding:14px 12px;color:var(--sug-subtle);font-size:13px}
+      [data-dsh-suggestions-settings] .sug-inline-retry{margin-left:6px;border:1px solid var(--sug-border);border-radius:var(--sug-control-radius);padding:3px 8px;background:var(--sug-field);color:var(--sug-text);font-size:12px}
+      [data-dsh-suggestions-settings] .sug-failures{color:var(--sug-subtle)}
       @container dsh-suggestion-settings (max-width:480px){
-        [data-dsh-suggestions-settings] .sug-row{grid-template-columns:minmax(0,1fr);gap:12px;padding:16px}
+        [data-dsh-suggestions-settings] .sug-rows{padding:0 12px}
+        [data-dsh-suggestions-settings] .sug-row{grid-template-columns:minmax(0,1fr);gap:8px}
         [data-dsh-suggestions-settings] .sug-record{min-height:44px}
-        [data-dsh-suggestions-settings] .sug-description{margin-bottom:22px}
       }
-      @media(prefers-reduced-motion:reduce){[data-dsh-suggestions-settings] button{transition:none}}
+      @media(prefers-reduced-motion:reduce){[data-dsh-suggestions-settings] button{transition:none}[data-dsh-suggestions-settings] .sug-menu{animation:none}}
     `;
 
     function SettingsCard({ language } = {}) {
       const zh = isChinese(language);
       const TEXT = zh ? {
-        title: '输入框建议',
-        description: '推荐下一条消息，也可以优化输入的草稿。',
+        title: 'DSH-Suggestions',
+        features: ['后续建议', '草稿优化', '快捷键'],
         shortcuts: '快捷键',
         hint: '点击“录制”，按一次或连按两次快捷键。',
         accept: '采纳建议',
@@ -698,19 +789,32 @@ window.__ModuleLoader__.load({
         prevNote: '返回已生成的建议。',
         press: '等待按键…',
         cancel: '按一次或连按两次快捷键，Esc 取消。',
-        save: '保存更改',
         saving: '保存中…',
-        reset: '恢复默认',
         saved: '已保存',
-        unsaved: '有未保存的更改',
         loading: '正在读取快捷键…',
         loadFailed: '快捷键读取失败',
         retry: '重试',
         conflict: '翻页快捷键不能与采纳、生成或另一翻页动作共用。',
         failed: '保存失败，请重试',
+        model: '生成模型',
+        modelHint: '用于生成建议和优化草稿。可选模型与输入框右下角一致。',
+        modelRow: '模型',
+        modelNote: '「自动」跟随当前会话正在使用的模型。',
+        modelAuto: '自动（跟随当前会话）',
+        modelLoading: '正在读取模型列表…',
+        modelLoadFailed: '模型列表读取失败，稍后可重试。',
+        modelStale: '当前不可用',
+        modelFailures: '暂不可用的提供方：',
+        effortRow: '推理强度',
+        effortNote: '「自动」使用该模型的最低强度，响应最快。',
+        effortAuto: '自动（最低强度）',
+        effortNone: '该模型没有可选的推理强度。',
+        rejected: '这个选择当前不可用，请重新选择。',
+        modelSearch: '搜索模型',
+        modelEmpty: '没有匹配的模型',
       } : {
-        title: 'Composer suggestions',
-        description: 'Get a follow-up suggestion or improve your draft.',
+        title: 'DSH-Suggestions',
+        features: ['Follow-up suggestions', 'Draft improvement', 'Shortcuts'],
         shortcuts: 'Keyboard shortcuts',
         hint: 'Click Record, then press your shortcut once or twice.',
         accept: 'Accept suggestion',
@@ -728,20 +832,43 @@ window.__ModuleLoader__.load({
         prevNote: 'Go back to a generated suggestion.',
         press: 'Waiting for a key…',
         cancel: 'Press once or twice. Esc cancels.',
-        save: 'Save changes',
         saving: 'Saving…',
-        reset: 'Reset',
         saved: 'Saved',
-        unsaved: 'Unsaved changes',
         loading: 'Loading shortcuts…',
         loadFailed: 'Could not load shortcuts',
         retry: 'Retry',
         conflict: 'Paging keys cannot also accept, generate or page in the other direction.',
         failed: 'Could not save. Try again.',
+        model: 'Generation model',
+        modelHint: 'Used for suggestions and draft improvements. The list matches the composer model picker.',
+        modelRow: 'Model',
+        modelNote: '“Auto” follows the model the current session uses.',
+        modelAuto: 'Auto (follow this session)',
+        modelLoading: 'Loading models…',
+        modelLoadFailed: 'Could not load models. Retry later.',
+        modelStale: 'currently unavailable',
+        modelFailures: 'Unavailable providers: ',
+        effortRow: 'Reasoning effort',
+        effortNote: '“Auto” uses the lowest effort this model offers.',
+        effortAuto: 'Auto (lowest effort)',
+        effortNone: 'This model advertises no reasoning effort.',
+        rejected: 'This choice is unavailable. Choose another.',
+        modelSearch: 'Search models',
+        modelEmpty: 'No matching models',
       };
       const ROWS = ['accept', 'generate', 'optimize', 'next', 'prev'].map(name => [name, TEXT[name], TEXT[name + 'Note']]);
       const [draft, setDraft] = useState(null);
       const [savedKeys, setSavedKeys] = useState(null);
+      const [model, setModel] = useState(null);
+      const [savedModel, setSavedModel] = useState(null);
+      const [catalog, setCatalog] = useState({ status: 'loading', groups: [], failures: [] });
+      const [openMenu, setOpenMenu] = useState('');
+      const [menuActive, setMenuActive] = useState(0);
+      const [menuSearch, setMenuSearch] = useState('');
+      const [menuBox, setMenuBox] = useState(null);
+      const modelButtonRef = useRef(null);
+      const effortButtonRef = useRef(null);
+      const menuRef = useRef(null);
       const [loading, setLoading] = useState(true);
       const [recording, setRecording] = useState('');
       const [capture, setCapture] = useState(null);
@@ -749,8 +876,12 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false);
       const draftRef = useRef(draft);
       const savedRef = useRef(savedKeys);
+      const modelRef = useRef(model);
+      const savedModelRef = useRef(savedModel);
       draftRef.current = draft;
       savedRef.current = savedKeys;
+      modelRef.current = model;
+      savedModelRef.current = savedModel;
 
       const load = useCallback(async signal => {
         setLoading(true); setStatus('');
@@ -758,17 +889,34 @@ window.__ModuleLoader__.load({
           const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config' }), signal });
           const payload = await response.json();
           if (!response.ok || !payload?.ok || !payload.value?.keys) throw new Error('config unavailable');
-          if (!signal?.aborted) { const next = normalizeKeys(payload.value.keys); setDraft(next); setSavedKeys(next); }
+          if (!signal?.aborted) { const next = normalizeKeys(payload.value.keys); const nextModel = normalizeModel(payload.value.model); setDraft(next); setSavedKeys(next); setModel(nextModel); setSavedModel(nextModel); }
         } catch {
           if (!signal?.aborted) setStatus('loadFailed');
         } finally { if (!signal?.aborted) setLoading(false); }
       }, []);
 
+      // The catalog is the same grouped projection the composer picker renders;
+      // it loads separately so a slow provider never blocks the shortcut form.
+      const loadCatalog = useCallback(async signal => {
+        setCatalog(current => ({ ...current, status: 'loading' }));
+        try {
+          const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'catalog' }), signal });
+          const payload = await response.json();
+          if (!response.ok || !payload?.ok) throw new Error('catalog unavailable');
+          const groups = Array.isArray(payload.value?.groups) ? payload.value.groups : [];
+          const failures = Array.isArray(payload.value?.failures) ? payload.value.failures : [];
+          if (!signal?.aborted) setCatalog({ status: 'ready', groups, failures });
+        } catch {
+          if (!signal?.aborted) setCatalog({ status: 'error', groups: [], failures: [] });
+        }
+      }, []);
+
       useEffect(() => {
         const controller = new AbortController();
         load(controller.signal);
+        loadCatalog(controller.signal);
         return () => controller.abort();
-      }, [load]);
+      }, [load, loadCatalog]);
 
       useEffect(() => {
         const updated = event => {
@@ -795,6 +943,7 @@ window.__ModuleLoader__.load({
           next[recording] = { keys: [pending.binding], presses: pending.presses };
           setDraft(next); setStatus('');
           setRecording(''); setCapture(null);
+          persist(next, modelRef.current);
         };
         const startStroke = (binding, code, released = false, now = Date.now()) => {
           const doubled = pending?.binding === binding && pending.released && now - pending.at <= 500;
@@ -837,26 +986,240 @@ window.__ModuleLoader__.load({
         return () => { clearTimeout(timer); window.removeEventListener('keydown', onKey, true); window.removeEventListener('keyup', onKeyUp, true); window.removeEventListener('blur', cancel); };
       }, [recording]);
 
-      const save = async next => {
-        if (keyConflict(next)) { setStatus('conflict'); return; }
+      // Every change is committed immediately; a rejected write restores the
+      // last value the host acknowledged so the card never shows unsaved state.
+      const persist = async (next, nextModel) => {
+        if (keyConflict(next)) { setStatus('conflict'); setDraft(savedRef.current); setModel(savedModelRef.current); return; }
         setBusy(true); setStatus('');
         try {
-          const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config', keys: next }) });
+          const response = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'config', keys: next, model: nextModel ?? null }) });
           const payload = await response.json();
-          if (!response.ok || !payload?.ok) throw new Error('save failed');
+          if (!response.ok || !payload?.ok) {
+            setStatus(['model-unavailable', 'effort-unavailable', 'invalid-model'].includes(payload?.error?.code) ? 'rejected' : 'failed');
+            setDraft(savedRef.current);
+            setModel(savedModelRef.current);
+            return;
+          }
           const saved = normalizeKeys(payload.value.keys);
+          const savedSelection = normalizeModel(payload.value.model);
           setDraft(saved);
           setSavedKeys(saved);
+          setModel(savedSelection);
+          setSavedModel(savedSelection);
           window.dispatchEvent(new CustomEvent(KEYS_EVENT, { detail: saved }));
           setStatus('saved');
-        } catch { setStatus('failed'); }
-        finally { setBusy(false); }
+        } catch {
+          setStatus('failed');
+          setDraft(savedRef.current);
+          setModel(savedModelRef.current);
+        } finally { setBusy(false); }
       };
       const keys = draft || DEFAULT_KEYS;
-      const dirty = savedKeys !== null && JSON.stringify(keys) !== JSON.stringify(savedKeys);
-      const error = ['loadFailed', 'failed', 'conflict', 'unsupported'].includes(status);
-      const message = loading ? TEXT.loading : status ? TEXT[status] : dirty ? TEXT.unsaved : '';
+      const error = ['loadFailed', 'failed', 'conflict', 'unsupported', 'rejected'].includes(status);
+      const message = loading ? TEXT.loading : busy ? TEXT.saving : status ? TEXT[status] : '';
       const disabled = loading || busy || savedKeys === null;
+      const selectedEntry = model ? catalog.groups.find(group => group.id === model.provider)?.models.find(entry => entry.id === model.model) : undefined;
+      const efforts = selectedEntry?.reasoning?.efforts || [];
+      const modelUnavailable = Boolean(model) && catalog.status === 'ready' && !selectedEntry;
+      const query = menuSearch.trim().toLowerCase();
+      const matches = text => !query || String(text).toLowerCase().includes(query);
+      const visibleGroups = catalog.groups
+        .map(group => ({ ...group, models: (group.models || []).filter(entry => matches(`${group.name || group.id} ${entry.name || entry.id}`)) }))
+        .filter(group => group.models.length > 0);
+      const showStale = modelUnavailable && (!model || matches(`${model.provider} ${model.model}`));
+      const modelNav = [
+        { kind: 'auto', current: !model },
+        ...(showStale ? [{ kind: 'stale', current: true }] : []),
+        ...visibleGroups.flatMap(group => group.models.map(entry => ({ kind: 'model', group, entry, current: Boolean(model && model.provider === group.id && model.model === entry.id) }))),
+      ];
+      const effortNav = [
+        { id: '', name: TEXT.effortAuto, current: !model?.reasoningEffort },
+        ...efforts.map(effort => ({ id: effort.id, name: effort.name || effort.id, current: model?.reasoningEffort === effort.id })),
+      ];
+      // Search stays available while filtering; it must not depend on the
+      // already-filtered list or typing would unmount the input.
+      const searchable = 1 + catalog.groups.reduce((count, group) => count + (group.models || []).length, 0) + (modelUnavailable ? 1 : 0) > 8;
+      const triggerRef = which => which === 'model' ? modelButtonRef : effortButtonRef;
+      const closePicker = () => { setOpenMenu(''); setMenuSearch(''); };
+      // A fixed popover is positioned against the nearest ancestor that creates
+      // a containing block (transform/filter/contain), so measure that ancestor
+      // instead of assuming the viewport.
+      const containingBlock = element => {
+        if (typeof document === 'undefined' || typeof window === 'undefined' || !element?.parentElement) return null;
+        let node = element.parentElement;
+        while (node && node !== document.body && node !== document.documentElement) {
+          const style = window.getComputedStyle(node);
+          if (style && (style.transform !== 'none' || style.filter !== 'none' || style.perspective !== 'none' || /paint|layout|strict|content/.test(style.contain || ''))) return node.getBoundingClientRect();
+          node = node.parentElement;
+        }
+        return null;
+      };
+      const openPicker = which => {
+        setStatus('');
+        setMenuSearch('');
+        setOpenMenu(which);
+        const items = which === 'model' ? modelNav : effortNav;
+        const index = items.findIndex(item => item.current);
+        setMenuActive(index < 0 ? 0 : index);
+        const button = triggerRef(which).current;
+        if (!button || typeof button.getBoundingClientRect !== 'function') { setMenuBox(null); return; }
+        const rect = button.getBoundingClientRect();
+        const origin = containingBlock(button);
+        const viewportWidth = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 1280;
+        const viewportHeight = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : 800;
+        const originLeft = origin ? origin.left : 0;
+        const originTop = origin ? origin.top : 0;
+        const originHeight = origin ? origin.height : viewportHeight;
+        const width = Math.max(Math.min(rect.width || 0, 380), 280);
+        const left = Math.max(8, Math.min(rect.left - originLeft, viewportWidth - width - 8));
+        const below = originHeight - (rect.bottom - originTop);
+        const above = rect.top - originTop;
+        setMenuBox(below < 280 && above > below
+          ? { left, width, bottom: originHeight - above + 6 }
+          : { left, width, top: rect.bottom - originTop + 6 });
+      };
+      useEffect(() => {
+        if (!openMenu) return undefined;
+        const onPointerDown = event => {
+          const target = event.target;
+          const trigger = triggerRef(openMenu).current;
+          if (trigger && target && typeof trigger.contains === 'function' && trigger.contains(target)) return;
+          if (menuRef.current && target && typeof menuRef.current.contains === 'function' && menuRef.current.contains(target)) return;
+          closePicker();
+        };
+        const onViewportChange = () => closePicker();
+        if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') document.addEventListener('pointerdown', onPointerDown, true);
+        if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+          window.addEventListener('resize', onViewportChange);
+          window.addEventListener('scroll', onViewportChange, true);
+        }
+        return () => {
+          if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') document.removeEventListener('pointerdown', onPointerDown, true);
+          if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+            window.removeEventListener('resize', onViewportChange);
+            window.removeEventListener('scroll', onViewportChange, true);
+          }
+        };
+      }, [openMenu]);
+      const pickModel = item => {
+        setStatus('');
+        let next = null;
+        if (item.kind === 'auto') next = null;
+        else if (item.kind === 'stale') next = { provider: model.provider, model: model.model, ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}) };
+        else {
+          const keepEffort = model?.reasoningEffort && (item.entry.reasoning?.efforts || []).some(effort => effort.id === model.reasoningEffort);
+          next = { provider: item.group.id, model: item.entry.id, ...(keepEffort ? { reasoningEffort: model.reasoningEffort } : {}) };
+        }
+        setModel(next);
+        closePicker();
+        persist(keys, next);
+      };
+      const pickEffort = item => {
+        if (!model) { closePicker(); return; }
+        const next = { ...model };
+        delete next.reasoningEffort;
+        if (item.id) next.reasoningEffort = item.id;
+        setModel(next);
+        closePicker();
+        persist(keys, next);
+      };
+      const onMenuKeyDown = event => {
+        if (!openMenu) return;
+        if (event.key === 'Escape') { event.preventDefault?.(); closePicker(); return; }
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault?.();
+          const items = openMenu === 'model' ? modelNav : effortNav;
+          const delta = event.key === 'ArrowDown' ? 1 : -1;
+          setMenuActive(current => items.length ? (current + delta + items.length) % items.length : 0);
+          return;
+        }
+        if (event.key === 'Tab') { closePicker(); return; }
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault?.();
+          const items = openMenu === 'model' ? modelNav : effortNav;
+          const item = items[Math.min(menuActive, items.length - 1)];
+          if (!item) return;
+          if (openMenu === 'model') pickModel(item); else pickEffort(item);
+        }
+      };
+      const chevronIcon = () => h('svg', { className: 'sug-chevron', viewBox: '0 0 16 16', width: 16, height: 16, 'aria-hidden': true },
+        h('path', { d: 'M4 6.5 8 10l4-3.5', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.6, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+      const checkIcon = key => h('svg', { key, className: 'sug-check', viewBox: '0 0 16 16', width: 16, height: 16, 'aria-hidden': true },
+        h('path', { d: 'm3.5 8.5 3 3 6-6.5', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.8, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+      const menuOption = (key, label, item, pick, items) => h('button', { type: 'button', role: 'option', key, className: 'sug-menu-option', 'data-sug-option': openMenu,
+        'aria-selected': Boolean(item.current), 'data-active': items.indexOf(item) === menuActive,
+        onClick: () => pick(item), onMouseEnter: () => setMenuActive(items.indexOf(item)),
+      }, h('span', { className: 'sug-menu-option-label' }, label), checkIcon(`${key}-check`));
+      const renderModelOptions = () => {
+        const nodes = [];
+        let index = 0;
+        nodes.push(menuOption('auto', TEXT.modelAuto, modelNav[index], pickModel, modelNav));
+        index++;
+        if (showStale) {
+          nodes.push(menuOption('stale', `${model.provider} / ${model.model} · ${TEXT.modelStale}`, modelNav[index], pickModel, modelNav));
+          index++;
+        }
+        for (const group of visibleGroups) {
+          nodes.push(h('div', { key: `group-${group.id}`, role: 'group', 'aria-label': group.name || group.id },
+            h('div', { className: 'sug-menu-group', 'aria-hidden': true }, group.name || group.id),
+            group.models.map(entry => {
+              const item = modelNav[index++];
+              return menuOption(`m-${group.id}-${entry.id}`, entry.name || entry.id, item, pickModel, modelNav);
+            })));
+        }
+        return nodes;
+      };
+      const renderEffortOptions = () => effortNav.map(item => menuOption(`e-${item.id || 'auto'}`, item.name, item, pickEffort, effortNav));
+      const modelRow = () => {
+        const note = catalog.status === 'loading' ? TEXT.modelLoading
+          : catalog.status === 'error' ? TEXT.modelLoadFailed
+            : modelUnavailable ? TEXT.modelStale
+              : TEXT.modelNote;
+        const label = model
+          ? modelUnavailable ? `${model.provider} / ${model.model} · ${TEXT.modelStale}` : selectedEntry?.name || `${model.provider} / ${model.model}`
+          : TEXT.modelAuto;
+        return h('div', { className: 'sug-row', 'data-row': 'model' },
+          h('div', null,
+            h('div', { className: 'sug-row-title' }, TEXT.modelRow),
+            h('div', { className: 'sug-row-note' },
+              note,
+              catalog.status === 'error' ? h('button', { type: 'button', className: 'sug-inline-retry', onClick: () => loadCatalog() }, TEXT.retry) : null,
+              catalog.status === 'ready' && catalog.failures.length
+                ? h('span', { className: 'sug-failures' }, ` ${TEXT.modelFailures}${catalog.failures.map(failure => failure?.name || failure?.id).join('、')}`)
+                : null)),
+          h('div', { className: 'sug-field' },
+            h('button', { type: 'button', className: 'sug-trigger', 'data-sug-model': '',
+              role: 'combobox', 'aria-haspopup': 'listbox', 'aria-expanded': openMenu === 'model', 'aria-label': TEXT.modelRow,
+              disabled: loading || busy || catalog.status !== 'ready' || savedKeys === null,
+              ref: modelButtonRef,
+              onClick: () => { if (openMenu === 'model') closePicker(); else openPicker('model'); },
+              onKeyDown: onMenuKeyDown,
+            },
+              h('span', { className: 'sug-trigger-label' }, label),
+              chevronIcon())));
+      };
+      const effortRow = () => h('div', { className: 'sug-row', 'data-row': 'effort' },
+        h('div', null,
+          h('div', { className: 'sug-row-title' }, TEXT.effortRow),
+          h('div', { className: 'sug-row-note' }, !model ? TEXT.effortNote : efforts.length ? TEXT.effortNote : catalog.status === 'loading' ? TEXT.modelLoading : TEXT.effortNone)),
+        h('div', { className: 'sug-field' },
+          h('button', { type: 'button', className: 'sug-trigger', 'data-sug-effort': '',
+            role: 'combobox', 'aria-haspopup': 'listbox', 'aria-expanded': openMenu === 'effort', 'aria-label': TEXT.effortRow,
+            disabled: loading || busy || !model || !efforts.length,
+            ref: effortButtonRef,
+            onClick: () => { if (openMenu === 'effort') closePicker(); else openPicker('effort'); },
+            onKeyDown: onMenuKeyDown,
+          },
+            h('span', { className: 'sug-trigger-label' }, model?.reasoningEffort ? (efforts.find(effort => effort.id === model.reasoningEffort)?.name || model.reasoningEffort) : TEXT.effortAuto),
+            chevronIcon())));
+      const pickerMenu = () => openMenu ? h('div', { className: 'sug-menu', role: 'listbox', 'data-sug-menu': openMenu, ref: menuRef,
+        'aria-label': openMenu === 'model' ? TEXT.modelRow : TEXT.effortRow, style: menuBox || {}, onKeyDown: onMenuKeyDown },
+        openMenu === 'model' && searchable ? h('div', { className: 'sug-menu-search' },
+          h('input', { type: 'search', value: menuSearch, placeholder: TEXT.modelSearch, 'aria-label': TEXT.modelSearch, autoFocus: true,
+            onChange: event => { setMenuSearch(event.target.value); setMenuActive(0); }, onKeyDown: onMenuKeyDown })) : null,
+        h('div', { className: 'sug-menu-list' },
+          openMenu === 'model' ? renderModelOptions() : renderEffortOptions(),
+          openMenu === 'model' && visibleGroups.length === 0 && !showStale ? h('div', { className: 'sug-menu-empty' }, TEXT.modelEmpty) : null)) : null;
       const startRecording = name => {
         setCapture(null); setRecording(recording === name ? '' : name); setStatus('');
       };
@@ -885,8 +1248,14 @@ window.__ModuleLoader__.load({
 
       return h('section', { 'data-dsh-suggestions-settings': '', 'aria-label': TEXT.title },
         h('style', null, SETTINGS_CSS),
-        h('h2', { className: 'sug-heading' }, TEXT.title),
-        h('p', { className: 'sug-description' }, TEXT.description),
+        h('header', { className: 'sug-header' },
+          h('div', { className: 'sug-brand' },
+            h('span', { className: 'sug-brand-tile', 'aria-hidden': true },
+              h('span', { className: 'sug-brand-glyph', style: { maskImage: SETTINGS_ICON_MASK } })),
+            h('h2', { className: 'sug-heading' }, TEXT.title)),
+          h('ul', { className: 'sug-features', role: 'list' }, TEXT.features.map(label => h('li', { key: label }, label)))),
+        h('div', { className: 'sug-section-heading' }, h('h3', null, TEXT.model), h('span', null, TEXT.modelHint)),
+        h('div', { className: 'sug-rows', 'data-sug-model-rows': '' }, modelRow(), effortRow()),
         h('div', { className: 'sug-section-heading' }, h('h3', null, TEXT.shortcuts), h('span', null, TEXT.hint)),
         h('div', { className: 'sug-rows' }, ROWS.map(([name, label, note]) => h('div', { key: name, className: 'sug-row', 'data-action': name, 'data-recording': recording === name },
           h('div', null, h('div', { className: 'sug-row-title' }, label), h('div', { className: 'sug-row-note' }, recording === name ? capture?.presses === 1 ? TEXT.wait + ' · Esc ' + TEXT.stop : TEXT.cancel : note)),
@@ -894,17 +1263,23 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sug-feedback', 'data-state': error ? 'error' : status, role: error ? 'alert' : 'status', 'aria-live': 'polite' },
           message ? h('span', null, message) : null,
           status === 'loadFailed' ? h('button', { type: 'button', className: 'sug-retry', onClick: () => load() }, TEXT.retry) : null),
-        h('div', { className: 'sug-footer' },
-          h('button', { type: 'button', className: 'sug-reset', disabled: disabled || Boolean(recording) || JSON.stringify(keys) === JSON.stringify(DEFAULT_KEYS), onClick: () => save(DEFAULT_KEYS) }, TEXT.reset),
-          h('button', { type: 'button', className: 'sug-save', disabled: disabled || !dirty || Boolean(recording), onClick: () => save(keys) }, busy ? TEXT.saving : TEXT.save)));
+        pickerMenu());
+    }
+
+    function SettingsEntry(props) {
+      if (props.view === 'summary') return isChinese(props.language)
+        ? '推荐下一条消息，也可以优化输入的草稿。' : 'Get a follow-up suggestion or improve your draft.';
+      return h(SettingsCard, props);
     }
 
     return { inject: ['slots', 'locale'], apply(ctx) {
+      installSettingsIcon(ctx);
       ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register({ name: 'conversation.input.overlay', id: 'dsh-suggestions', order: 30 }, SuggestionHint));
-      const label = () => isChinese(ctx.locale?.getSnapshot?.().active) ? '输入框建议' : 'Composer suggestions';
+      const label = () => 'DSH-Suggestions';
       const inject = () => ({ language: ctx.locale?.getSnapshot?.().active });
       ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'dsh-suggestions', label, inject, order: 40 }, SettingsCard));
       ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({ name: 'settings.plugins.tab', id: 'dsh-suggestions', label, inject, order: 40 }, SettingsCard));
+      ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-suggestions', inject }, SettingsEntry));
     } };
   },
 });

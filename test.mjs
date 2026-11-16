@@ -37,7 +37,22 @@ function harness(options = {}) {
     },
     agentDefaultModel: { currentSelection: () => ({ provider: 'default-provider', model: 'default-model' }) },
     llm: {
-      async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'high' }, { id: 'low' }] } }; },
+      listProviders: () => [
+        { id: 'session-provider', name: 'Session Provider' },
+        { id: 'default-provider', name: 'Default Provider' },
+        { id: 'broken-provider', name: 'Broken Provider' },
+      ],
+      async listModels(provider) {
+        if (provider === 'broken-provider') throw new Error('credentials missing');
+        return provider === 'session-provider'
+          ? [{ id: 'session-model', name: 'Session Model' }]
+          : [{ id: 'default-model', name: 'Default Model', description: 'Default route' }];
+      },
+      async resolveModelInfo(provider, model) {
+        return model === 'default-model'
+          ? { reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' } }
+          : { reasoning: { efforts: [{ id: 'high' }, { id: 'low' }] } };
+      },
       async *stream(request) {
         calls.push(request);
         if (state.hold) await new Promise((resolve, reject) => { request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }); state.release = resolve; });
@@ -229,6 +244,61 @@ try {
       writeFileSync(h.configFile, JSON.stringify(legacy));
       assert.deepEqual((await h.api({ action: 'config' })).value.keys, normalizeKeys(legacy));
       assert.deepEqual(JSON.parse(readFileSync(h.configFile, 'utf8')), legacy);
+    } finally { h.close(); }
+  });
+  await test('model catalog mirrors the composer grouping and isolates provider failures', async () => {
+    const h = harness();
+    try {
+      const catalog = (await h.api({ action: 'catalog' })).value;
+      assert.deepEqual(catalog.groups.map(group => group.id), ['session-provider', 'default-provider']);
+      assert.deepEqual(catalog.groups[1].models[0].reasoning.efforts.map(effort => effort.id), ['low', 'high']);
+      assert.equal(catalog.groups[1].models[0].reasoning.defaultEffort, 'low');
+      assert.deepEqual(catalog.failures.map(failure => failure.id), ['broken-provider']);
+      assert.match(catalog.failures[0].message, /credentials/);
+      assert.equal(h.calls.length, 0); // Inspecting the catalog never sends a model request.
+    } finally { h.close(); }
+  });
+  await test('an explicit model and effort override the session route for suggestions', async () => {
+    const h = harness();
+    try {
+      const selection = { provider: 'default-provider', model: 'default-model', reasoningEffort: 'high' };
+      const saved = await h.api({ action: 'config', model: selection });
+      assert.equal(saved.ok, true);
+      assert.deepEqual(saved.value.model, selection);
+      const keys = normalizeKeys({ accept: { keys: ['F2'], presses: 1 } });
+      assert.deepEqual((await h.api({ action: 'config', keys })).value.keys, keys);
+      assert.deepEqual(JSON.parse(readFileSync(h.configFile, 'utf8')).model, selection);
+      assert.equal((await h.api({ sessionId: 'own' })).value.status, 'ready');
+      assert.equal(h.calls[0].provider, 'default-provider');
+      assert.equal(h.calls[0].model, 'default-model');
+      assert.equal(h.calls[0].reasoningEffort, 'high');
+      assert.equal((await h.api({ action: 'config', model: null })).value.model, undefined);
+      assert.equal((await h.api({ sessionId: 'other' })).value.status, 'ready');
+      assert.equal(h.calls.at(-1).provider, 'session-provider');
+      assert.equal(h.calls.at(-1).reasoningEffort, 'low');
+    } finally { h.close(); }
+  });
+  await test('unknown models and efforts are rejected without touching the stored selection', async () => {
+    const h = harness();
+    try {
+      assert.equal((await h.api({ action: 'config', model: { provider: 'session-provider', model: 'session-model' } })).ok, true);
+      const before = readFileSync(h.configFile, 'utf8');
+      assert.equal((await h.api({ action: 'config', model: { provider: 'missing-provider', model: 'x' } })).ok, false);
+      assert.equal((await h.api({ action: 'config', model: { provider: 'session-provider', model: 'missing-model' } })).ok, false);
+      const effort = await h.api({ action: 'config', model: { provider: 'session-provider', model: 'session-model', reasoningEffort: 'ultra' } });
+      assert.equal(effort.ok, false);
+      assert.equal(effort.error.code, 'effort-unavailable');
+      assert.equal(readFileSync(h.configFile, 'utf8'), before);
+    } finally { h.close(); }
+  });
+  await test('a saved model whose provider disappeared falls back to the session route', async () => {
+    const h = harness();
+    try {
+      const stored = { ...normalizeKeys({}), model: { provider: 'retired-provider', model: 'retired-model' } };
+      writeFileSync(h.configFile, JSON.stringify(stored));
+      assert.equal((await h.api({ sessionId: 'own' })).value.status, 'ready');
+      assert.equal(h.calls[0].provider, 'session-provider');
+      assert.deepEqual((await h.api({ action: 'config' })).value.model, stored.model);
     } finally { h.close(); }
   });
   await test('shared suggestion policy preserves the answer ending and accepts real abstention only', () => {

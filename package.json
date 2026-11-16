@@ -1,6 +1,6 @@
 {
   "name": "dsh-suggestions",
-  "version": "0.7.0",
+  "version": "0.8.4",
   "private": true,
   "description": "为 DeepSeek Harness 提供后续提示词建议和草稿优化。",
   "type": "module",
@@ -28,7 +28,8 @@
     "mcp/README.md"
   ],
   "scripts": {
-    "test": "node test.mjs && node test-client.mjs && node mcp/test.mjs"
+    "test": "node test.mjs && node test-client.mjs && node mcp/test.mjs",
+    "build": "node tools/sync-settings-icon.mjs"
   },
   "dsh": {
     "bundle": {
@@ -42,7 +43,7 @@
       ]
     }
   },
-  "displayName": "DSH-suggestions",
+  "displayName": "DSH-Suggestions",
   "author": "LUMIAO9527",
   "repository": {
     "type": "git",

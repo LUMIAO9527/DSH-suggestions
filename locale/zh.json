@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "DSH-suggestions",
+    "title": "DSH-Suggestions",
     "description": "空框双击 Tab / → 生成，单击采纳；Alt＋↓ / ↑ 或翻页按钮切换建议；有草稿时双击优化。"
   },
   "suggestion.label": "建议的后续提示词"

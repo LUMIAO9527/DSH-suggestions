@@ -30,12 +30,12 @@ await test('deferred settings labels and props use only declared client services
   const settings = entries.filter(entry => entry.name.startsWith('settings.'));
   assert.equal(settings.length, 2);
   for (const entry of settings) {
-    assert.equal(entry.label(), '输入框建议');
+    assert.equal(entry.label(), 'DSH-Suggestions');
     assert.equal(entry.inject().language, 'zh');
   }
   active = 'en';
   for (const entry of settings) {
-    assert.equal(entry.label(), 'Composer suggestions');
+    assert.equal(entry.label(), 'DSH-Suggestions');
     assert.equal(entry.inject().language, 'en');
   }
 });
@@ -135,7 +135,9 @@ function mount(initial = {}) {
   function close() { for (const hook of hooks) hook?.cleanup?.(); timers.clear(); frames.clear(); }
   render();
   function find(node, name) { if (!node || typeof node !== 'object') return; if (name in (node.props || {})) return node; for (const child of node.children || []) { const found = find(child, name); if (found) return found; } }
-  return { state, requests, changes, flush, update, updateKeys, tick, frame, key, keyup, visible, page: () => find(tree, 'data-dsh-suggestions-page')?.children[0], generating: () => tree?.props['data-dsh-suggestions'] === 'generating', status: () => tree?.props['data-dsh-suggestions'] === 'status', close, card: () => components['settings.section']?.Component, registration: name => components[name], text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
+  return { state, requests, changes, flush, update, updateKeys, tick, frame, key, keyup, visible,
+    resize: () => window.dispatchEvent(new Event('resize')), pendingFrames: () => frames.size,
+    page: () => find(tree, 'data-dsh-suggestions-page')?.children[0], generating: () => tree?.props['data-dsh-suggestions'] === 'generating', status: () => tree?.props['data-dsh-suggestions'] === 'status', close, card: () => components['settings.section']?.Component, registration: name => components[name], text: () => tree?.children?.[0]?.children?.[0]?.children?.[0], layout: () => tree.children[0]?.props.style, placeholderVisible: () => !styleMap.has('visibility'), setCaretEnd(value) { atEnd = value; }, advance(ms) { now += ms; }, blur() { window.dispatchEvent(new Event('blur')); } };
 }
 
 await test('hint follows native placeholder movement, width and skin typography while visible', async () => {
@@ -145,6 +147,9 @@ await test('hint follows native placeholder movement, width and skin typography 
     assert.equal(h.layout().left, 14); assert.equal(h.layout().top, 12); assert.equal(h.layout().width, 578);
     h.state.nativeBox = { left: 153, top: 238, width: 220, height: 32 };
     h.state.nativeStyle = { ...h.state.nativeStyle, fontSize: '18px', lineHeight: '32px' };
+    assert.equal(h.pendingFrames(), 0);
+    h.resize(); h.resize();
+    assert.equal(h.pendingFrames(), 1);
     await h.frame();
     assert.equal(h.layout().left, 53); assert.equal(h.layout().top, 38); assert.equal(h.layout().width, 220);
     assert.equal(h.layout().fontSize, '18px'); assert.equal(h.layout().lineHeight, '32px');
@@ -153,6 +158,7 @@ await test('hint follows native placeholder movement, width and skin typography 
     // A scaled card still uses its own CSS pixel coordinates.
     h.state.anchorBox = { left: 100, top: 200, width: 480, height: 0.8 };
     h.state.nativeBox = { left: 142.4, top: 230.4, width: 176, height: 25.6 };
+    h.resize();
     await h.frame();
     assert.ok(Math.abs(h.layout().left - 53) < 0.01); assert.ok(Math.abs(h.layout().top - 38) < 0.01);
     assert.equal(h.layout().width, 220);
@@ -165,8 +171,10 @@ await test('zero-sized native text uses the skin pseudo-element font; hidden pla
     await h.flush(); assert.equal(h.visible(), true);
     assert.equal(h.layout().fontSize, '14px'); assert.equal(h.layout().lineHeight, '24px');
     h.state.nativeBox = { left: 114, top: 212, width: 0, height: 0 };
+    h.resize();
     await h.frame(); assert.equal(h.visible(), false); assert.equal(h.placeholderVisible(), true);
     h.state.nativeBox = { left: 124, top: 222, width: 300, height: 24 };
+    h.resize();
     await h.frame(); assert.equal(h.visible(), true); assert.equal(h.layout().left, 24);
   } finally { h.close(); assert.equal(h.placeholderVisible(), true); }
 });
@@ -621,7 +629,7 @@ await test('settings contributions use declared host slots, identifiers and loca
       const entry = h.registration(name);
       assert.equal(typeof entry?.Component, 'function');
       assert.equal(entry.options.id, 'dsh-suggestions');
-      assert.equal(entry.options.label(), '输入框建议');
+      assert.equal(entry.options.label(), 'DSH-Suggestions');
       assert.equal(entry.options.inject().language, 'zh');
     }
   } finally { h.close(); }
@@ -743,5 +751,190 @@ await test('a remote running response retires the old deck before feedback can r
     h.state.suggestion = '';
     await h.tick(); assert.equal(h.visible(), false);
     await h.key('ArrowUp', { altKey: true }); assert.equal(h.visible(), false);
+  } finally { h.close(); }
+});
+
+// The settings card is a separate contribution; this mount renders only it so
+// hook slots never mix with the composer overlay adapter above.
+const CARD_DEFAULTS = {
+  accept: { keys: ['Tab', 'ArrowRight'], presses: 1 },
+  generate: { keys: ['Tab', 'ArrowRight'], presses: 2 },
+  optimize: { keys: ['Tab', 'ArrowRight'], presses: 2 },
+  next: { keys: ['Alt+ArrowDown'], presses: 1 },
+  prev: { keys: ['Alt+ArrowUp'], presses: 1 },
+};
+const CARD_CATALOG = {
+  groups: [
+    { id: 'deepseek', name: 'DeepSeek', models: [
+      { id: 'deepseek-v4', name: 'DeepSeek V4', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' } },
+      { id: 'deepseek-lite', name: 'DeepSeek Lite' },
+    ] },
+    { id: 'other', name: 'Other Provider', models: [{ id: 'other-model', name: 'Other Model', reasoning: { efforts: [{ id: 'medium', name: 'Medium' }] } }] },
+  ],
+  failures: [{ id: 'offline', name: 'Offline Provider', message: 'credentials missing' }],
+};
+
+function mountSettings(initial = {}) {
+  const state = { language: 'zh', keys: initial.keys ?? null, model: initial.model ?? null, catalog: initial.catalog ?? CARD_CATALOG,
+    catalogFails: initial.catalogFails === true, rejectCode: initial.rejectCode || '', saves: [], catalogCalls: 0 };
+  const hooks = [];
+  const same = (a, b) => a && b && a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
+  let cursor = 0, dirty = false, effects = [], tree, plugin;
+  const React = {
+    createElement(type, props, ...children) { return { type, props: props || {}, children }; },
+    useState(initialValue) {
+      const index = cursor++;
+      if (!hooks[index]) hooks[index] = { value: initialValue };
+      return [hooks[index].value, value => { const next = typeof value === 'function' ? value(hooks[index].value) : value; if (!Object.is(next, hooks[index].value)) { hooks[index].value = next; dirty = true; } }];
+    },
+    useRef(initialValue) { const index = cursor++; if (!hooks[index]) hooks[index] = { current: initialValue }; return hooks[index]; },
+    useCallback(fn, deps) { const index = cursor++; if (!same(hooks[index]?.deps, deps)) hooks[index] = { value: fn, deps }; return hooks[index].value; },
+    useEffect(fn, deps) { const index = cursor++; if (!same(hooks[index]?.deps, deps)) effects.push(() => { hooks[index]?.cleanup?.(); hooks[index] = { deps, cleanup: fn() }; }); },
+    useLayoutEffect(fn, deps) { React.useEffect(fn, deps); },
+  };
+  const timers = new Map();
+  let timerId = 0;
+  const fetch = async (_url, init = {}) => {
+    const body = JSON.parse(init.body || '{}');
+    if (body.action === 'config') {
+      if (body.keys !== undefined || body.model !== undefined) {
+        state.saves.push(body);
+        if (state.rejectCode) return { ok: false, json: async () => ({ ok: false, error: { code: state.rejectCode, message: state.rejectCode } }) };
+        if (body.keys !== undefined) state.keys = body.keys;
+        if (body.model !== undefined) state.model = body.model;
+      }
+      return { ok: true, json: async () => ({ ok: true, value: { keys: state.keys ?? {}, model: state.model ?? null, defaults: CARD_DEFAULTS } }) };
+    }
+    if (body.action === 'catalog') {
+      state.catalogCalls++;
+      if (state.catalogFails) return { ok: false, json: async () => ({ ok: false, error: { message: 'catalog unavailable' } }) };
+      return { ok: true, json: async () => ({ ok: true, value: state.catalog }) };
+    }
+    return { ok: false, json: async () => ({ ok: false }) };
+  };
+  const window = { __ModuleLoader__: { load(definition) { plugin = definition.factory(() => React); } }, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} };
+  const document = { querySelectorAll: () => [], head: { appendChild() {} }, createElement: () => ({ style: {}, remove() {}, setAttribute() {} }), body: {}, addEventListener() {}, removeEventListener() {} };
+  const storage = () => { const values = new Map(); return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }; };
+  const context = vm.createContext({ window, document, Date, console, CustomEvent, localStorage: storage(), sessionStorage: storage(), AbortController,
+    setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; }, clearTimeout(id) { timers.delete(id); }, fetch });
+  vm.runInContext(source, context);
+  const components = {};
+  plugin.apply({ locale: { getSnapshot: () => ({ active: state.language }) }, slots: {
+    inject(_name, fn) { fn(); },
+    register(options, Component) { components[options.name] = { Component, options }; return () => {}; },
+  } });
+  const Card = components['settings.section'].Component;
+  function render() {
+    cursor = 0; effects = []; dirty = false;
+    tree = Card({ language: state.language });
+    const pending = effects; effects = [];
+    pending.forEach(effect => effect());
+  }
+  async function flush() { for (let i = 0; i < 20; i++) { await Promise.resolve(); if (dirty) render(); } }
+  const findAll = test => {
+    const found = [];
+    (function walk(node) {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const child of node) walk(child); return; }
+      if (test(node)) found.push(node);
+      for (const child of node.children || []) walk(child);
+    })(tree);
+    return found;
+  };
+  const find = test => findAll(test)[0];
+  const flatten = (children = []) => children.flatMap(child => Array.isArray(child) ? flatten(child) : child === null || child === undefined || child === false ? [] : [child]);
+  const children = node => flatten(node.children);
+  const button = className => find(node => node.props?.className === className);
+  const triggerBy = name => find(node => node.type === 'button' && node.props?.[name] !== undefined);
+  const modelTrigger = () => triggerBy('data-sug-model');
+  const effortTrigger = () => triggerBy('data-sug-effort');
+  const textOf = node => {
+    if (typeof node === 'string') return node;
+    if (!node || typeof node !== 'object') return '';
+    return flatten(node.children || []).map(textOf).join('');
+  };
+  const labelOf = node => {
+    const first = flatten(node?.children || [])[0];
+    return typeof first === 'string' ? first : textOf(first);
+  };
+  const options = () => findAll(node => node.props?.['data-sug-option'] !== undefined);
+  const optionLabels = () => options().map(labelOf);
+  const groupLabels = () => findAll(node => node.props?.className === 'sug-menu-group').map(labelOf);
+  const pickOption = async label => {
+    const option = options().find(node => labelOf(node) === label);
+    assert.ok(option, `missing menu option ${label}`);
+    option.props.onClick();
+    await flush();
+  };
+  const openModel = async () => { modelTrigger().props.onClick(); await flush(); };
+  const openEffort = async () => { effortTrigger().props.onClick(); await flush(); };
+  render();
+  return { state, flush, findAll, find, children, modelTrigger, effortTrigger, labelOf, optionLabels, groupLabels, pickOption, openModel, openEffort, button, close() { timers.clear(); } };
+}
+
+await test('settings card lists the composer catalog and commits every model or effort change', async () => {
+  const h = mountSettings();
+  try {
+    await h.flush();
+    assert.equal(h.modelTrigger().props.disabled, false);
+    assert.equal(h.labelOf(h.modelTrigger()), '自动（跟随当前会话）');
+    assert.equal(h.effortTrigger().props.disabled, true);
+    assert.equal(h.button('sug-save'), undefined); // changes save themselves
+    assert.equal(h.button('sug-reset'), undefined);
+    await h.openModel();
+    assert.equal(h.modelTrigger().props['aria-expanded'], true);
+    assert.deepEqual(h.groupLabels(), ['DeepSeek', 'Other Provider']);
+    assert.deepEqual(h.optionLabels(), ['自动（跟随当前会话）', 'DeepSeek V4', 'DeepSeek Lite', 'Other Model']);
+    await h.pickOption('DeepSeek V4');
+    assert.equal(h.labelOf(h.modelTrigger()), 'DeepSeek V4');
+    assert.equal(h.modelTrigger().props['aria-expanded'], false);
+    assert.deepEqual(h.state.saves.at(-1), { action: 'config', keys: CARD_DEFAULTS, model: { provider: 'deepseek', model: 'deepseek-v4' } });
+    assert.equal(h.effortTrigger().props.disabled, false);
+    assert.equal(h.labelOf(h.effortTrigger()), '自动（最低强度）');
+    await h.openEffort();
+    assert.deepEqual(h.optionLabels(), ['自动（最低强度）', 'Low', 'High']);
+    await h.pickOption('High');
+    assert.equal(h.labelOf(h.effortTrigger()), 'High');
+    assert.deepEqual(h.state.saves.at(-1), { action: 'config', keys: CARD_DEFAULTS, model: { provider: 'deepseek', model: 'deepseek-v4', reasoningEffort: 'high' } });
+    assert.match(JSON.stringify(h.find(node => node.props?.className === 'sug-feedback')), /已保存/);
+    // Choosing auto again persists the cleared selection and disables effort.
+    await h.openModel();
+    await h.pickOption('自动（跟随当前会话）');
+    assert.deepEqual(h.state.saves.at(-1).model, null);
+    assert.equal(h.labelOf(h.modelTrigger()), '自动（跟随当前会话）');
+    assert.equal(h.effortTrigger().props.disabled, true);
+  } finally { h.close(); }
+});
+
+await test('a failed catalog disables the model selector and its retry reloads it', async () => {
+  const h = mountSettings({ catalogFails: true });
+  try {
+    await h.flush();
+    assert.equal(h.modelTrigger().props.disabled, true);
+    assert.ok(h.button('sug-inline-retry'));
+    h.state.catalogFails = false;
+    h.button('sug-inline-retry').props.onClick();
+    await h.flush();
+    assert.equal(h.state.catalogCalls, 2);
+    assert.equal(h.modelTrigger().props.disabled, false);
+    await h.openModel();
+    assert.ok(h.optionLabels().includes('DeepSeek V4'));
+    assert.match(JSON.stringify(h.find(node => node.props?.['data-sug-model-rows'] !== undefined)), /Offline Provider/);
+  } finally { h.close(); }
+});
+
+await test('a saved model that left the catalog stays visible and a rejected write is rolled back', async () => {
+  const h = mountSettings({ model: { provider: 'retired', model: 'gone' } });
+  try {
+    await h.flush();
+    assert.match(h.labelOf(h.modelTrigger()), /当前不可用/);
+    await h.openModel();
+    assert.ok(h.optionLabels().includes('retired / gone · 当前不可用'));
+    h.state.rejectCode = 'model-unavailable';
+    await h.pickOption('DeepSeek V4');
+    assert.match(h.labelOf(h.modelTrigger()), /当前不可用/); // restored to the host's value
+    assert.equal(h.state.saves.at(-1).model.model, 'deepseek-v4'); // the attempt is recorded
+    assert.equal(h.find(node => node.props?.className === 'sug-feedback').props['data-state'], 'error');
+    assert.match(JSON.stringify(h.find(node => node.props?.className === 'sug-feedback')), /当前不可用/);
   } finally { h.close(); }
 });

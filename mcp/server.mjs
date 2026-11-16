@@ -11,7 +11,7 @@ const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_FRAME_BYTES = 10 * 1024 * 1024;
 const MAX_CONCURRENT = 2;
 const MAX_QUEUED = 8;
-const sessionProperty = { type: 'string', maxLength: 240, minLength: 1, description: 'DSH session ID. Uses the session model, or the DSH default when omitted.' };
+const sessionProperty = { type: 'string', maxLength: 240, minLength: 1, description: 'DSH session ID. Uses the model chosen in DSH-Suggestions settings, otherwise the session model, or the DSH default when omitted.' };
 const TOOLS = [
   { name: 'suggest_next_prompt', description: 'Suggest one follow-up prompt from the user request and completed answer.', inputSchema: {
     type: 'object', properties: {

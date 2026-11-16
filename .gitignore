@@ -7,3 +7,6 @@ _wip/
 bridge.json
 npm-debug.log*
 pnpm-debug.log*
+
+# 本机交接
+/HANDOFF.md
